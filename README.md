@@ -195,30 +195,6 @@ Device selection follows svod's convention — weights land on the default
 device at load time, so call `svod_tensor::set_default_device(...)` before
 loading for GPU execution.
 
-## Layout
-
-```
-crates/spellman-language/  dependency-free language inventory (one macro
-                           table: ISO 639-1/639-3, NLLB, Whisper codes,
-                           names, script) + script classification
-crates/spellman-detector/  features (canonicalizing n-gram tokenizer),
-                           hashing, folded model, routing, svod JIT plans,
-                           `assess` metrics CLI, criterion benches,
-                           Rust↔Python parity fixture
-crates/spellman-cli/       the `spellman` binary: detect / eval / bench
-benchmarks/                standalone `lid-bench` crate: spellman vs
-                           whichlang vs lingua on identical eval rows
-train/                     Python pipeline (uv): pluggable data sources,
-                           mixing/augmentation, hygiene, hard negatives,
-                           training + folded export
-model/                     trained-model artifacts (fetched from Hugging
-                           Face or produced by training; gitignored)
-docs/                      design document, training guide
-```
-
-All 31 Rust tests green (24 detector + 5 language-crate + 2 CLI),
-including the Rust↔Python feature-parity fixture.
-
 ## Status and next steps
 
 The current model — the mixed-domain recipe above (dim 128, D = 2^17,
@@ -234,6 +210,9 @@ Not yet done: hard negatives at ~10× scale (rus-attraction on short
 texts is the top residual error), wild referees for more languages
 (rusentitweet covers rus only), whatlang baseline, GPU (CUDA/AMD) runs,
 Chechen Wikipedia dump held in reserve (146 MB).
+
+All 31 Rust tests green (24 detector + 5 language-crate + 2 CLI),
+including the Rust↔Python feature-parity fixture.
 
 ## References
 
