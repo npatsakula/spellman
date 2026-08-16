@@ -19,12 +19,12 @@ identical eval files, including lingua-style granularity ladders
 (accuracy on single words / word pairs / triples / whole texts derived
 from the same eval data):
 
-| eval | rung | spellman | fastText lid.176 |
-|---|---|---|---|
-| held-out mix (85,283, pristine test) | text | **98.15%** | 90.45%* |
-| Tatoeba (37,051, out-of-domain) | word / pair / triple | **65.9 / 84.7 / 92.5** | 59.0 / 79.0 / 87.9 |
-| Tatoeba (37,051, out-of-domain) | text | **98.32%** | 94.90%* |
-| rusentitweet (2,679 wild Russian tweets) | text | **92.35%**† | — |
+| eval | rung | spellman | GlotLID v3 | fastText lid.176 |
+|---|---|---|---|---|
+| held-out mix (85,283, pristine test) | text | **98.15%** | 96.43%‡ | 90.45%* |
+| Tatoeba (37,051, out-of-domain) | word / pair / triple | **66.9 / 85.4 / 92.9** | 43.9 / 79.3 / 91.9‡ | 59.0 / 79.0 / 87.9 |
+| Tatoeba (37,051, out-of-domain) | text | 98.32% | **99.25%**‡ | 94.90%* |
+| rusentitweet (2,679 wild Russian tweets) | text | **92.35%**† | — | — |
 
 \* fastText scored on the subset of languages its label set supports
 (24/30; no kpv/udm labels, and its `uz` is Latin-script Uzbek — it scores
@@ -35,6 +35,19 @@ problem spellman is built around; it recovers to ~97% by full text.
 † wild referee: real Russian tweets, 78% containing Latin words, 61%
 @mentions, 20% URLs — the register clean corpora never show. Before the
 canonicalizing featurizer + wild/short augmentation this scored 72.49%.
+
+‡ GlotLID v3 ([cis-lmu/GlotLID](https://huggingface.co/cis-lmu/GlotLID)),
+the open-LID SOTA fastText model (2,102 labels, 1.7 GB), scored with
+script-variant labels mapped to our classes (`tat_Latn` → tat — the
+courtesy goes to the baseline) and full coverage of the evals' languages
+(ara/cmn are absent from its label set; neither appears in these files).
+By length: held-out 85.3 / 95.3 / 97.9 (≤20 / 21–100 / >100 — spellman
+leads every bucket), Tatoeba 97.8 / 99.3 / 100.0 (GlotLID leads every
+bucket). It predicts at ~355 µs/doc — ~100× spellman on the M1 Pro,
+~300× on the AMD 395 Max. The split is the story: spellman wins the
+wild, heavy-Cyrillic workload by 1.7pp and the single-word rung by 23pp
+(2,102-class label entropy is brutal on short text); GlotLID's far
+larger training set wins clean out-of-domain sentences by 0.9pp.
 
 ### Against the Rust LID crates
 
