@@ -183,16 +183,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("execute-only (plan, synthetic idx):");
+    // The fence matters: on async devices (AMD/GPU) execute_with_vars only
+    // queues work — without reading a byte of the output the timed loop
+    // measures submission latency (~1 µs/exec), not execution.
     {
         let plan = &mut f16_plan;
+        let mut sink = vec![0u8; 8];
         time_exec("f16 gather+sum", reps, batch, || {
-            Ok(plan.execute_with_vars(&[("b", batch as i64)])?)
+            plan.execute_with_vars(&[("b", batch as i64)])?;
+            plan.output()?.copyout_prefix(&mut sink)?;
+            Ok(())
         });
     }
     {
         let plan = &mut i8_plan;
+        let mut sink = vec![0u8; 8];
         time_exec("int8 gather+cast+sum", reps, batch, || {
-            Ok(plan.execute_with_vars(&[("b", batch as i64)])?)
+            plan.execute_with_vars(&[("b", batch as i64)])?;
+            plan.output()?.copyout_prefix(&mut sink)?;
+            Ok(())
         });
     }
 

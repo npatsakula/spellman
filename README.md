@@ -111,13 +111,13 @@ weakest class), tat 0.99, mhr/bel/bak 0.99, sah 0.98 — the residual
 confusions are the genuinely hard ones (uzn P 0.87, tgk R 0.92 from data
 thinness, rus-attraction on short low-resource texts).
 
-Performance (fp16 svod JIT plans, BEAM=16, k=1024, full held-out mix —
-85,283 documents):
+Performance (fp16 svod JIT plans, BEAM=16, k=1024, Tatoeba eval —
+37,051 documents):
 
 | hardware | bulk | single document |
 |---|---|---|
-| Apple M1 Pro | 4.6 µs/sample (~215k docs/s) | 3.7 µs/doc |
-| AMD AI 395 Max | — | — |
+| Apple M1 Pro | 3.5 µs/sample (~285k docs/s) | 3.7 µs/doc |
+| AMD AI 395 Max | 1.2 µs/sample (~830k docs/s) | 13.0 µs/doc |
 
 Scoring is pure table lookups after the algebraic fold `P = E·W` — no
 embedding gathers, no matmul. fmix32 bucket spread on real n-grams:
