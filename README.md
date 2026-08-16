@@ -55,8 +55,9 @@ our workload. Rerun:
 | lingua 1.8 (high) | 17/30 | 27.58% | 95.86% | 68.55% | 97.69% | 319 |
 | lingua 1.8 (low) | 17/30 | 26.67% | 92.70% | 65.38% | 93.17% | 401 |
 
-(85,283 / 37,051 rows; Apple Silicon; spellman k=1024 under BEAM=4;
-µs/sample from the held-out file. "all rows" counts gold languages
+(85,283 / 37,051 rows; Apple Silicon; spellman k=1024 under BEAM=16;
+µs/sample from the held-out file in this harness — the CLI eval path on
+the same data reads 4.6 µs/sample. "all rows" counts gold languages
 outside a tool's inventory as errors — what a 30-class Cyrillic workload
 actually sees.)
 
@@ -103,7 +104,7 @@ What the numbers say:
   work.
 - **Latency**: whichlang is the fastest per document (tiny 16-class
   model) at ~3.5× spellman bulk; lingua high-accuracy is ~61× slower
-  than spellman bulk (319 vs 5.2 µs/sample, BEAM=4).
+  than spellman bulk (319 vs 5.2 µs/sample, BEAM=16).
 
 Per-language on the held-out mix: che F1 1.00 (from the campaign's
 weakest class), tat 0.99, mhr/bel/bak 0.99, sah 0.98 — the residual
@@ -111,20 +112,25 @@ confusions are the genuinely hard ones (uzn P 0.87, tgk R 0.92 from data
 thinness, rus-attraction on short low-resource texts).
 
 Performance (Apple Silicon, fp16 svod JIT plans, k=1024, full held-out
-mix — 85,283 documents):
+mix — 85,283 documents; medians of repeated runs):
 
 | scheduler | bulk | single document | plan prepare |
 |---|---|---|---|
-| default | 10.4 µs/sample | 22.4 µs/doc | 0.17 s |
-| BEAM=2 | 5.6 µs/sample | 3.8 µs/doc | 0.4 s |
-| **BEAM=4** | **5.1 µs/sample (~195k docs/s)** | **3.7 µs/doc** | 0.4 s |
-| BEAM=8 | 5.1 µs/sample | 3.8 µs/doc | 0.4 s |
+| default | 9.6 µs/sample | 22.4 µs/doc | 0.2 s |
+| BEAM=2 | 5.5 µs/sample | 3.8 µs/doc | 0.3 s |
+| BEAM=4 | 5.4 µs/sample | 3.7 µs/doc | 0.3 s |
+| BEAM=8 | 4.6 µs/sample | 3.7 µs/doc | 0.3 s |
+| **BEAM=16** | **4.6 µs/sample (~215k docs/s)** | **3.7 µs/doc** | 0.3 s |
+| BEAM=32 | 4.9 µs/sample | 3.8 µs/doc | 0.4 s |
 
-The beam scheduler captures its whole win at width 2–4 (~2× bulk, ~6×
-single-document); wider beams don't pay back their longer plan
-preparation. Scoring is pure table lookups after the algebraic fold
-`P = E·W` — no embedding gathers, no matmul. fmix32 bucket spread on
-real n-grams: chi²/dof ≈ 1.006 (uniform ≈ 1.0).
+The beam scheduler is worth ~2× bulk and ~6× single-document over the
+default heuristics. Bulk keeps improving through BEAM=16 — the sweet
+spot: the fastest and most stable numbers with no extra plan-preparation
+cost — while single-document saturates at width 4 and BEAM≥24 regresses
+as prepare time grows (run-to-run spread is ±0.3 µs/sample). Scoring is
+pure table lookups after the algebraic fold `P = E·W` — no embedding
+gathers, no matmul. fmix32 bucket spread on real n-grams: chi²/dof ≈
+1.006 (uniform ≈ 1.0).
 
 ## Datasets
 

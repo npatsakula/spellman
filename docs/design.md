@@ -257,10 +257,11 @@ rayon-parallel feature extraction writes signed bucket indices straight
 into the buffer through a typed view — no staging allocation, no copy.
 
 Measured on the shipped model (Apple Silicon, k=1024, full held-out
-mix): **5.1 µs/sample bulk** (~195k docs/s) and **3.7 µs single
-document** at `BEAM=4`; the beam scheduler is worth ~2× bulk / ~6×
-single over the default heuristics, and widths beyond 4 don't pay back
-their longer plan preparation.
+mix): **4.6 µs/sample bulk** (~215k docs/s) at `BEAM=16` and **3.7 µs
+single document** from width 4 up. The beam scheduler is worth ~2×
+bulk / ~6× single over the default heuristics; bulk keeps improving
+through BEAM=16, single-document saturates at 4, and BEAM≥24 regresses
+as plan preparation grows.
 
 The weight constant is built born-2-D (`Tensor::from_raw_bytes`) so the
 buffer → cast → neg → cat chain stays fully lazy and the plan folds it
@@ -293,7 +294,7 @@ Measured decisions, in the order they pay off:
 | precision-decoupled storage (int8/fp8 `P` + scales) | −50% artifact at ±0.02pp; int8 *compute* rejected: the cast chain wins only scheduler-less, never under beam (2/4/8 measured) |
 | hand word classifier | 29 ns/word vs 67 ns (DFA) / 83 ns (PikeVM) |
 | high-bit buckets + fmix32 | chi²/dof 1.006 at D = 2^17; XXH3 rejected |
-| constant-K JIT plan | 5.1 µs/sample bulk, 3.7 µs single-doc (BEAM=4); beam = ~2× bulk / ~6× single over the default scheduler |
+| constant-K JIT plan | 4.6 µs/sample bulk (BEAM=16), 3.7 µs single-doc (BEAM≥4); beam = ~2× bulk / ~6× single over the default scheduler |
 | fp16 end-to-end graph | no cast kernels on the replay path; exact per-value loads, wide LID logit margins |
 | zero-copy featurization | rayon writes indices directly into the plan's host-mapped buffer |
 | numpy-vectorized training featurizer | batch featurization asserted bit-identical to the scalar contract |
