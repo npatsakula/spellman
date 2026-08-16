@@ -144,7 +144,7 @@ tracked in git — fetch it into `./model`:
 
 ```bash
 git clone https://github.com/npatsakula/svod   # → ./svod
-huggingface-cli download vpermilp/spellman --local-dir model
+hf download vpermilp/spellman --local-dir model
 cargo build --release -p spellman-cli
 
 # stdin in, ISO 639-3 out
