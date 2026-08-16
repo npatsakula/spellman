@@ -119,12 +119,9 @@ Performance (fp16 svod JIT plans, BEAM=16, k=1024, full held-out mix —
 | Apple M1 Pro | 4.6 µs/sample (~215k docs/s) | 3.7 µs/doc |
 | AMD AI 395 Max | — | — |
 
-(BEAM=16 is the measured sweet spot on the M1 Pro — the beam scheduler
-is worth ~2× bulk / ~6× single-document over the default heuristics; the
-full sweep lives in the [design doc](docs/design.md).) Scoring is pure
-table lookups after the algebraic fold `P = E·W` — no embedding gathers,
-no matmul. fmix32 bucket spread on real n-grams: chi²/dof ≈ 1.006
-(uniform ≈ 1.0).
+Scoring is pure table lookups after the algebraic fold `P = E·W` — no
+embedding gathers, no matmul. fmix32 bucket spread on real n-grams:
+chi²/dof ≈ 1.006 (uniform ≈ 1.0).
 
 ## Datasets
 
