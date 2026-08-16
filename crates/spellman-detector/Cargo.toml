@@ -7,13 +7,13 @@ license = "MIT"
 
 [dependencies]
 spellman-language = { path = "../spellman-language" }
-svod-tensor = { path = "../../svod/tensor" }
-svod-model = { path = "../../svod/model" }
-svod-macros = { path = "../../svod/macros" }
-svod-ir = { path = "../../svod/ir" }
-svod-dtype = { path = "../../svod/dtype" }
-svod-device = { path = "../../svod/device" }
-svod-runtime = { path = "../../svod/runtime" }
+svod-tensor = { git = "https://github.com/npatsakula/svod", branch = "main" }
+svod-model = { git = "https://github.com/npatsakula/svod", branch = "main" }
+svod-macros = { git = "https://github.com/npatsakula/svod", branch = "main" }
+svod-ir = { git = "https://github.com/npatsakula/svod", branch = "main" }
+svod-dtype = { git = "https://github.com/npatsakula/svod", branch = "main" }
+svod-device = { git = "https://github.com/npatsakula/svod", branch = "main" }
+svod-runtime = { git = "https://github.com/npatsakula/svod", branch = "main" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

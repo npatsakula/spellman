@@ -3144,6 +3144,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "svod-arch"
 version = "0.1.0-alpha.3"
+source = "git+https://github.com/npatsakula/svod?branch=main#b8d436c58a3a142c57659197a7f5634e81ba62b6"
 dependencies = [
  "serde",
  "snafu 0.9.2",
@@ -3153,6 +3154,7 @@ dependencies = [
 [[package]]
 name = "svod-codegen"
 version = "0.1.0-alpha.3"
+source = "git+https://github.com/npatsakula/svod?branch=main#b8d436c58a3a142c57659197a7f5634e81ba62b6"
 dependencies = [
  "itertools 0.14.0",
  "smallvec",
@@ -3167,6 +3169,7 @@ dependencies = [
 [[package]]
 name = "svod-device"
 version = "0.1.0-alpha.3"
+source = "git+https://github.com/npatsakula/svod?branch=main#b8d436c58a3a142c57659197a7f5634e81ba62b6"
 dependencies = [
  "bindgen",
  "enum_delegate",
@@ -3187,6 +3190,7 @@ dependencies = [
 [[package]]
 name = "svod-dtype"
 version = "0.1.0-alpha.3"
+source = "git+https://github.com/npatsakula/svod?branch=main#b8d436c58a3a142c57659197a7f5634e81ba62b6"
 dependencies = [
  "enumset",
  "once_cell",
@@ -3199,6 +3203,7 @@ dependencies = [
 [[package]]
 name = "svod-ir"
 version = "0.1.0-alpha.3"
+source = "git+https://github.com/npatsakula/svod?branch=main#b8d436c58a3a142c57659197a7f5634e81ba62b6"
 dependencies = [
  "bon",
  "derive_more",
@@ -3220,6 +3225,7 @@ dependencies = [
 [[package]]
 name = "svod-macros"
 version = "0.1.0-alpha.3"
+source = "git+https://github.com/npatsakula/svod?branch=main#b8d436c58a3a142c57659197a7f5634e81ba62b6"
 dependencies = [
  "convert_case 0.10.0",
  "proc-macro2",
@@ -3230,6 +3236,7 @@ dependencies = [
 [[package]]
 name = "svod-model"
 version = "0.1.0-alpha.3"
+source = "git+https://github.com/npatsakula/svod?branch=main#b8d436c58a3a142c57659197a7f5634e81ba62b6"
 dependencies = [
  "base64 0.22.1",
  "bon",
@@ -3267,6 +3274,7 @@ dependencies = [
 [[package]]
 name = "svod-runtime"
 version = "0.1.0-alpha.3"
+source = "git+https://github.com/npatsakula/svod?branch=main#b8d436c58a3a142c57659197a7f5634e81ba62b6"
 dependencies = [
  "libc",
  "libffi",
@@ -3288,6 +3296,7 @@ dependencies = [
 [[package]]
 name = "svod-schedule"
 version = "0.1.0-alpha.3"
+source = "git+https://github.com/npatsakula/svod?branch=main#b8d436c58a3a142c57659197a7f5634e81ba62b6"
 dependencies = [
  "bincode",
  "bon",
@@ -3310,6 +3319,7 @@ dependencies = [
 [[package]]
 name = "svod-tensor"
 version = "0.1.0-alpha.3"
+source = "git+https://github.com/npatsakula/svod?branch=main#b8d436c58a3a142c57659197a7f5634e81ba62b6"
 dependencies = [
  "bon",
  "ndarray",
@@ -3331,6 +3341,7 @@ dependencies = [
 [[package]]
 name = "svod-tk"
 version = "0.1.0-alpha.3"
+source = "git+https://github.com/npatsakula/svod?branch=main#b8d436c58a3a142c57659197a7f5634e81ba62b6"
 dependencies = [
  "smallvec",
  "snafu 0.8.9",

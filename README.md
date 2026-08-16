@@ -153,8 +153,7 @@ details in the [training guide](docs/training.md).
 
 ## Quick start
 
-Build (the detector depends on [svod] by path — clone it inside the repo
-root first: `git clone https://github.com/npatsakula/svod` → `./svod`):
+Build ([svod] comes in as a git dependency — a plain clone just works):
 
 ```bash
 cargo build --release -p spellman-cli

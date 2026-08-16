@@ -1,8 +1,8 @@
 # build artifacts (root workspace + standalone benchmarks crate)
 target/
 
-# vendored svod checkout: separate project consumed by path dependency
-# (a local symlink to a sibling checkout works too)
+# optional local svod checkout for svod-side development (the dependency
+# comes from git; a plain clone builds without it)
 /svod
 
 # session / editor artifacts
