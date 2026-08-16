@@ -16,7 +16,7 @@ import zipfile
 from dataclasses import dataclass
 from typing import Iterator
 
-from . import CACHE_DIR, Dataset, register
+from . import CACHE_DIR, Dataset, download_with_retries, register
 
 OPUS_API = (
     "https://opus.nlpl.eu/opusapi/?source={src}&target={tgt}"
@@ -45,7 +45,7 @@ class Opus(Dataset):
             corpora = json.load(urllib.request.urlopen(api))["corpora"]
             url = next(c["url"] for c in corpora if c.get("url", "").endswith(".zip"))
             print(f"  downloading {self.corpus} {self.src}-{self.tgt} from OPUS...", flush=True)
-            urllib.request.urlretrieve(url, zip_path)
+            download_with_retries(url, zip_path)
 
         side = f"{self.corpus}.{self.src}-{self.tgt}.{self.src}"
         n = 0

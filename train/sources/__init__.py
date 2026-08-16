@@ -67,6 +67,32 @@ def _coerce(value: str) -> object:
         return value
 
 
+def download_with_retries(url: str, dest: Path, attempts: int = 3, timeout: float = 60.0) -> None:
+    """Fetch `url` to `dest` with backoff. DNS hiccups and connection
+    resets on corpus hosts are routine; one failed attempt must not kill
+    a mix that has been downloading for an hour."""
+    import time
+    import urllib.request
+
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            tmp = dest.with_suffix(dest.suffix + ".part")
+            with urllib.request.urlopen(url, timeout=timeout) as resp, tmp.open("wb") as out:
+                while chunk := resp.read(1 << 20):
+                    out.write(chunk)
+            tmp.rename(dest)
+            return
+        except Exception as err:  # noqa: BLE001 — retry anything network-shaped
+            last = err
+            tmp.unlink(missing_ok=True)
+            if attempt < attempts:
+                delay = 5.0 * attempt
+                print(f"  download attempt {attempt}/{attempts} failed ({err}); retrying in {delay:.0f}s", flush=True)
+                time.sleep(delay)
+    raise SystemExit(f"could not fetch {url} after {attempts} attempts: {last}")
+
+
 def parse_source(spec: str) -> tuple[str, dict[str, object]]:
     """``name:key=value,key=value`` -> (name, {key: value})."""
     name, _, opts_str = spec.partition(":")

@@ -13,12 +13,11 @@ downloaded once into cache/raw/.
 from __future__ import annotations
 
 import tarfile
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from . import CACHE_DIR, Dataset, register
+from . import CACHE_DIR, Dataset, download_with_retries, register
 
 LEIPZIG_URL = "https://downloads.wortschatz.leipzig.de/corpora/{corpus}.tar.gz"
 
@@ -39,7 +38,7 @@ class Leipzig(Dataset):
         tgz = raw_dir / f"{self.corpus}.tar.gz"
         if not tgz.exists():
             print(f"  downloading {self.corpus} from Leipzig...", flush=True)
-            urllib.request.urlretrieve(LEIPZIG_URL.format(corpus=self.corpus), tgz)
+            download_with_retries(LEIPZIG_URL.format(corpus=self.corpus), tgz)
 
         n = 0
         with tarfile.open(tgz, "r:gz") as tar:
