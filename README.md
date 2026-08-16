@@ -24,7 +24,7 @@ from the same eval data):
 | held-out mix (85,283, pristine test) | text | **98.28%** | 96.43%‡ | 90.45%* |
 | Tatoeba (37,051, out-of-domain) | word / pair / triple | **68.5 / 87.1 / 94.1** | 43.9 / 79.3 / 91.9‡ | 59.0 / 79.0 / 87.9 |
 | Tatoeba (37,051, out-of-domain) | text | 98.66% | **99.25%**‡ | 94.90%* |
-| rusentitweet (2,679 wild Russian tweets) | text | **93.73%**† | — | — |
+| rusentitweet (2,679 wild Russian tweets) | text | **93.73%**† | 80.48%‡ | 87.94% |
 
 \* fastText scored on the subset of languages its label set supports
 (24/30; no kpv/udm labels, and its `uz` is Latin-script Uzbek — it scores
@@ -35,7 +35,13 @@ problem spellman is built around; it recovers to ~97% by full text.
 † wild referee: real Russian tweets, 78% containing Latin words, 61%
 @mentions, 20% URLs — the register clean corpora never show. Before the
 canonicalizing featurizer + wild/short augmentation this scored 72.49%;
-the v3 lexical word-ngram channel added the latest +1.4pp.
+the v3 lexical word-ngram channel added the latest +1.4pp. Gold is rus
+only, so both baselines run with their native `rus` labels — no subset
+scoring — and both collapse on the register (by length, ≤20 / 21–100 /
+>100: GlotLID 43.0 / 81.4 / 97.3, lid.176 63.8 / 88.8 / 97.6, spellman
+88.2 / 93.9 / 96.3). GlotLID's misses scatter across ukr, khk, ita, ekk,
+bel, orv (Old Russian) and und — 2,102-way label entropy on noisy
+Latin-mixed text.
 
 ‡ GlotLID v3 ([cis-lmu/GlotLID](https://huggingface.co/cis-lmu/GlotLID)),
 the open-LID SOTA fastText model (2,102 labels, 1.7 GB), scored with
