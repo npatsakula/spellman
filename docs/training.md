@@ -249,6 +249,58 @@ residuals: rus-attraction on short low-resource texts (wants hard
 negatives at ~10× scale), the mkd/bul/sr continuum on marker-less
 texts, Latin-script Tatar short sentences, tgk data thinness.
 
+### Replaying this mix
+
+Every `spellman-mix` run now records its exact recipe into
+`<out>/manifest.json`. The current model's recipe, reconstructed from
+the cache fingerprints (the Komi parallel corpus is deliberately absent
+— rejected by the contamination audit):
+
+```bash
+# prerequisites (once):
+#   - Tatoeba sentence dump at train/tatoeba/sentences.csv
+#     (copy from a machine that has it, or the exports at
+#     downloads.tatoeba.org)
+#   - hf auth login, with the gates of muhtasham/tajik-corpus and
+#     ailabykt/sakha-corpus-mono accepted in the browser
+uv run spellman-mix --out data_mix \
+    --source fineweb2:docs_per_lang=3600,per_doc=4 \
+    --source tatoeba:train_per_lang=8000 \
+    --source hf:repo=cis-lmu/Glot500,config=tat_Cyrl,lang=tat,docs=3000,per_doc=4 \
+    --source hf:repo=cis-lmu/Glot500,config=tgk_Cyrl,lang=tgk,docs=12000,per_doc=2 \
+    --source hf:repo=cis-lmu/Glot500,config=sah_Cyrl,lang=sah,docs=3000,per_doc=4 \
+    --source hf:repo=cis-lmu/Glot500,config=udm_Cyrl,lang=udm,docs=14000,per_doc=2 \
+    --source hf:repo=cis-lmu/Glot500,config=tyv_Cyrl,lang=tyv,docs=15000,per_doc=2 \
+    --source hf:repo=muhtasham/tajik-corpus,lang=tgk,docs=8000,per_doc=2 \
+    --source hf:repo=ailabykt/sakha-corpus-mono,lang=sah,docs=8000,per_doc=3 \
+    --source hf:repo=wikimedia/wikipedia,config=20231101.tt,lang=tat,docs=2000,per_doc=4 \
+    --source hf:repo=AigizK/tatar-russian-parallel-corpora,column=tat,lang=tat,docs=999999,per_doc=2,streaming=False \
+    --source hf:repo=HuggingFaceFW/fineweb-2,config=tat_Latn,lang=tat,docs=10000,per_doc=3 \
+    --source hf:repo=AigizK/bashkir-russian-parallel-corpora,column=ba,lang=bak,docs=30000,per_doc=2 \
+    --source hf:repo=alexantonov/chuvash_mono,column=chv,lang=chv,docs=20000,per_doc=2 \
+    --source hf:repo=Agisight/tyv-rus-200k,column=tyv,lang=tyv,docs=30000,per_doc=2 \
+    --source hf:repo=the-cramer-project/Kyrgyz_News_Corpus,lang=kir,docs=8000,per_doc=3 \
+    --source hf:repo=ai-forever/udmurt-corpora,lang=udm,docs=30000,per_doc=2 \
+    --source hf:repo=udmurtNLP/zerpal,column=string,lang=udm,docs=20000,per_doc=3 \
+    --source hf:repo=d0rj/ru-mhr-parallel,column=mhr,lang=mhr,docs=30000,per_doc=2 \
+    --source hf:repo=mteb/MacedonianTweetSentimentClassification,lang=mkd,docs=999999,per_doc=1 \
+    --source leipzig:corpus=che_community_2017,lang=che \
+    --source leipzig:corpus=che_community_2023,lang=che \
+    --source opus:corpus=translatewiki,src=ce,tgt=en,lang=che \
+    --source hf:repo=NM-development/nmd-ce-ru-171k-v0,column=ce,lang=che,docs=999999,per_doc=1,streaming=False \
+    --source csv:path=rusentitweet_train.csv,column=text,lang=rus \
+    --source jsonl:path=cache/hard_negatives.jsonl \
+    --cap-per-lang 16000 --wild-augment 0.3 --short-augment 0.2
+```
+
+On a fresh machine the caches rebuild by re-downloading everything, so
+the full loop is: fetch a judge model
+(`hf download vpermilp/spellman --local-dir ../model`), run the mix
+once, then `hygiene.py cache/*.jsonl --script`, then
+`hard_negatives.py --model ../model`, then run the same mix again
+(warm caches replay instantly) and train. Rebuilds re-download the
+upstream data — always rerun hygiene after one.
+
 ## End-to-end walkthrough
 
 ```bash

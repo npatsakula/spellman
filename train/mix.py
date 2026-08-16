@@ -289,6 +289,21 @@ def main() -> None:
         ).write_ndjson(path)
         print(f"{split}: {len(rows)} -> {path}")
 
+    # The mix recipe is data: record it so a model directory can always be
+    # traced back to its exact sources and knobs (source order matters —
+    # dedup is first-source-wins).
+    manifest = {
+        "argv": sys.argv[1:],
+        "seed": args.seed,
+        "cap_per_lang": args.cap_per_lang,
+        "wild_augment": args.wild_augment,
+        "short_augment": args.short_augment,
+        "sources": [list(parse_source(spec)) for spec in args.source],
+    }
+    (args.out / "manifest.json").write_text(
+        json.dumps(manifest, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
 
 if __name__ == "__main__":
     main()
