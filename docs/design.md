@@ -228,7 +228,11 @@ graph under the beam scheduler at any width tested (BEAM 2/4/8;
 
 All inference runs through compiled [svod] execution plans
 (`crates/spellman-detector/src/jit.rs`); weights land on the default
-device at load time (`svod_tensor::set_default_device` for GPU).
+device at load time (`svod_tensor::set_default_device` for GPU). Models
+load from a local directory or straight from the Hugging Face Hub
+(`BulkDetector::from_hub` / `from_hub_variant`, the `hub` module —
+same wiring as svod's own models; quantized variants live in
+subdirectories of the default repo).
 
 The graph is deliberately minimal — gather and one reduction, pure fp16
 end to end (ARM/NEON native on Apple Silicon; no cast kernels in the

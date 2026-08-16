@@ -27,6 +27,7 @@
 
 pub mod features;
 pub mod hash;
+pub mod hub;
 pub mod jit;
 pub mod model;
 pub mod route;

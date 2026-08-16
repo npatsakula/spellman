@@ -155,21 +155,22 @@ details in the [training guide](docs/training.md).
 
 The detector depends on [svod] by path: clone it inside the repo root
 before the first build (`git clone https://github.com/npatsakula/svod`
-→ `./svod`). The trained model is published on Hugging Face and is not
-tracked in git — fetch it into `./model`:
+→ `./svod`). The trained model lives on Hugging Face and is fetched
+automatically — no manual download step.
 
 ```bash
 git clone https://github.com/npatsakula/svod   # → ./svod
-hf download vpermilp/spellman --local-dir model
 cargo build --release -p spellman-cli
 
-# stdin in, ISO 639-3 out
-echo "Съешь ещё этих мягких французских булок" | ./target/release/spellman detect
-printf 'Қазақша жазбалар\nThe quick brown fox\n' | ./target/release/spellman detect --lines
-printf 'Қазақша\n' | ./target/release/spellman detect --json
+# stdin in, ISO 639-3 out. --model hf:<repo>[/variant] pulls the model
+# through the HF cache on first use (root = f16; int8-col, fp8-col, … =
+# quantized variants). A plain path also works (default: ./model).
+echo "Съешь ещё этих мягких французских булок" | ./target/release/spellman detect --model hf:vpermilp/spellman
+printf 'Қазақша жазбалар\nThe quick brown fox\n' | ./target/release/spellman detect --model hf:vpermilp/spellman --lines
+printf 'Қазақша\n' | ./target/release/spellman detect --model hf:vpermilp/spellman/int8-col --json
 # {"confidence":0.99…,"lang":"kaz","name":"Kazakh","uncertain":false}
 
-./target/release/spellman eval train/tatoeba_eval.tsv  # accuracy + throughput
+./target/release/spellman eval --model hf:vpermilp/spellman train/tatoeba_eval.tsv  # accuracy + throughput
 ./target/release/spellman bench --single               # probes + timings
 ```
 
@@ -180,13 +181,15 @@ use `spellman_detector::Lang` rather than a separate
 ```rust
 use spellman_detector::{BulkDetector, Lang, SingleDetector};
 
-// One document at a time — B=1 is baked into the plan (static kernels).
+// From a local model directory — one document at a time, B=1 baked into
+// the plan (static kernels).
 let mut single = SingleDetector::load("model".as_ref(), 1024)?;
 let d = single.detect("Съешь ещё этих мягких французских булок")?;
 
-// Bulk batches — constant K, rebindable batch, rayon featurization written
-// zero-copy straight into the plan's input buffer.
-let mut bulk = BulkDetector::load("model".as_ref(), 1024, 512)?;
+// Or straight from the Hugging Face Hub (svod-style from_hub: first call
+// downloads into the HF cache, later calls replay it; variants select a
+// storage format — int8-col is 3.9MB instead of 7.9MB, same accuracy).
+let mut bulk = BulkDetector::from_hub_variant("int8-col", 1024, 512)?;
 let results = bulk.detect_batch(&["Привет", "Hello"])?;
 ```
 

@@ -44,7 +44,8 @@ impl PlanArgs {
     about = "Cyrillic-optimized language detection (30 classes, folded fastText-style model, svod JIT)"
 )]
 struct Cli {
-    /// Model directory (model.json + model.safetensors).
+    /// Model directory (model.json + model.safetensors), or
+    /// `hf:<owner>/<repo>[/variant]` to fetch it from the Hugging Face Hub.
     #[arg(long, global = true, default_value = "model", env = "SPELLMAN_MODEL")]
     model: PathBuf,
 
@@ -87,12 +88,31 @@ enum Command {
     },
 }
 
+/// Resolve `--model` to a local model directory: `hf:<owner>/<repo>[/variant]`
+/// goes through the detector crate's Hub support (standard HF cache, replayed
+/// when warm); anything else is a local path, used as-is.
+fn resolve_model(spec: &str) -> Result<PathBuf, Box<dyn Error>> {
+    match spellman_detector::hub::parse_hub_ref(spec) {
+        Some((repo, variant)) => {
+            Ok(spellman_detector::hub::download_model(&repo, variant.as_deref())?)
+        }
+        None => Ok(spec.into()),
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
+    let model_dir = match resolve_model(&cli.model.to_string_lossy()) {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("spellman: {err}");
+            std::process::exit(1);
+        }
+    };
     let result = match &cli.command {
-        Command::Detect { lines, json, plan } => detect(&cli.model, *lines, *json, plan),
-        Command::Eval { files, plan } => eval(&cli.model, files, plan),
-        Command::Bench { plan, repeats, single } => bench(&cli.model, plan, *repeats, *single),
+        Command::Detect { lines, json, plan } => detect(&model_dir, *lines, *json, plan),
+        Command::Eval { files, plan } => eval(&model_dir, files, plan),
+        Command::Bench { plan, repeats, single } => bench(&model_dir, plan, *repeats, *single),
     };
     if let Err(err) = result {
         eprintln!("spellman: {err}");

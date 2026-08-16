@@ -117,6 +117,8 @@ pub enum BulkError {
     Model(#[from] crate::model::ModelError),
     #[error("state: {0}")]
     State(#[from] svod_model::state::Error),
+    #[error("hub: {0}")]
+    Hub(#[from] crate::hub::HubError),
     #[error("buffer view: {0}")]
     View(String),
     #[error("batch of {len} exceeds max_batch {max}")]
@@ -160,6 +162,27 @@ impl BulkDetector {
         let mut jit = SpellmanJit::new(inner);
         jit.prepare(InputSpec::i32(&[max_batch, k]))?;
         Ok(BulkDetector { jit, model, k, max_batch })
+    }
+
+    /// Load the default model from the Hugging Face Hub
+    /// ([`hub::DEFAULT_HUB_REPO`], f16) — svod's `from_hub` wiring: the
+    /// first call downloads into the HF cache, later calls replay it.
+    pub fn from_hub(k: usize, max_batch: usize) -> Result<BulkDetector, BulkError> {
+        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, None)?;
+        Self::load(&dir, k, max_batch)
+    }
+
+    /// Load a storage-format variant (`"int8-col"`, `"fp8-col"`, …) of the
+    /// default Hub model.
+    pub fn from_hub_variant(variant: &str, k: usize, max_batch: usize) -> Result<BulkDetector, BulkError> {
+        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, Some(variant))?;
+        Self::load(&dir, k, max_batch)
+    }
+
+    /// Load any Hub repo (optionally under a variant subdirectory).
+    pub fn from_hub_repo(repo_id: &str, variant: Option<&str>, k: usize, max_batch: usize) -> Result<BulkDetector, BulkError> {
+        let dir = crate::hub::download_model(repo_id, variant)?;
+        Self::load(&dir, k, max_batch)
     }
 
     pub fn detect_batch(&mut self, texts: &[&str]) -> Result<Vec<Detection>, BulkError> {
@@ -331,6 +354,19 @@ impl SingleDetector {
         let mut jit = SpellmanJit::new(inner).with_b_fixed(1);
         jit.prepare(InputSpec::i32(&[1, k]))?;
         Ok(SingleDetector { jit, model, k })
+    }
+
+    /// Load the default model from the Hugging Face Hub (f16 variant);
+    /// see [`BulkDetector::from_hub`] for the caching behavior.
+    pub fn from_hub(k: usize) -> Result<SingleDetector, BulkError> {
+        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, None)?;
+        Self::load(&dir, k)
+    }
+
+    /// Load a storage-format variant of the default Hub model.
+    pub fn from_hub_variant(variant: &str, k: usize) -> Result<SingleDetector, BulkError> {
+        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, Some(variant))?;
+        Self::load(&dir, k)
     }
 
     /// Detect the language of one document.
