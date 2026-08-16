@@ -22,3 +22,4 @@ __pycache__/
 # trained-model artifacts: published on Hugging Face, or produced locally
 # by train/spellman-train — never tracked
 /model/
+/model-*/

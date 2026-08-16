@@ -218,8 +218,9 @@ def export(model: SpellmanNet, cfg: Config, theta: float, out_dir: Path, store: 
     save_file(tensors_out, str(out_dir / "model.safetensors"))
     meta = {
         "format": "spellman-model",
-        "version": 2,
+        "version": 3,
         "canonicalize": True,
+        "lexical": True,
         "languages": LANGUAGES,
         "log2_d": cfg.log2_d,
         "hash": cfg.hash_id,

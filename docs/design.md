@@ -119,6 +119,37 @@ bit-parity contract out of regex-engine semantics.
   5-grams. The XOR is bijective per order, so within an order nothing
   changes; across orders, windows no longer alias.
 
+### Lexical channel (word n-grams)
+
+Char n-grams blur exactly where close pairs need discrimination: function
+words and long shared stems. On top of the char keys, every word emits two
+**whole-word keys** into the same u64 space (fastText's word / wordNgram
+features, the channel GlotLID inherits from it):
+
+- **word-unigram:** FNV-1a-64 over the same lowercased (or
+  canonicalized-sentinel) codepoints that feed the packer — `привет`,
+  `что`, `және` each become one key regardless of their internal n-grams.
+  Canonicalized words hash their sentinel, so every URL shares one
+  unigram key.
+- **word-bigram:** adjacent retained words combined as
+  `fmix64(h_prev ^ rotl32(h_cur))` — "в городе", "ағаш пен" are stronger
+  evidence than either word alone.
+- Domain separation extends the order tags: `TAG_WORD = 6·ODD`,
+  `TAG_BIGRAM = 7·ODD` (the `n·ODD` sequence continued at n = 6, 7), so
+  lexical keys never alias char n-gram keys.
+
+Keys are emitted **interleaved** — after each word's char n-grams, its
+unigram key, then its bigram with the previous word. Interleaving (rather
+than appending the lexical keys after the char stream) keeps extraction
+streaming with no word-hash buffer, and makes K-truncation keep a
+proportional mix of both channels in long documents. Words dropped by the
+`#`-strip neither join nor break the bigram chain.
+
+Measured effect (same data, same training config): held-out 98.15 → 98.28,
+Tatoeba 98.32 → 98.66, Tatoeba single-word rung 66.9 → 68.5, wild tweets
+92.35 → 93.73. Token count grows ~10% (~2 keys per word); bulk latency is
+unchanged (3.4–3.5 µs/sample on M1 Pro).
+
 ## Feature hashing
 
 `crates/spellman-detector/src/hash.rs`. A packed key maps to a bucket in
@@ -191,24 +222,25 @@ the row block and the runtime graph needs no multiplies.
 ```json
 {
   "format": "spellman-model",
-  "version": 2,
+  "version": 3,
   "canonicalize": true,
+  "lexical": true,
   "languages": ["rus", "…", "ara"],
   "log2_d": 17,
   "hash": "fmix32",
   "seed": 2654435769,
   "n_min": 1, "n_max": 5,
-  "theta": 0.8331743478775024,
+  "theta": 0.8369,
   "quant": {"dtype": "int8", "scheme": "column"}
 }
 ```
 
-`languages` is the column order (must equal `Lang::ALL`); `version: 2` +
-`canonicalize: true` is the canonicalizing feature space — the loader
-rejects anything else at load time, so a stale model can't be silently
-scored with the wrong tokenizer. `theta` is the calibrated confidence
-threshold (5th percentile of validation confidence): below it,
-`Detection::is_uncertain` is set.
+`languages` is the column order (must equal `Lang::ALL`); `version: 3` +
+`canonicalize` + `lexical` is the canonicalizing feature space with the
+word-ngram channel — the loader rejects anything else at load time, so a
+stale model can't be silently scored with the wrong tokenizer. `theta` is
+the calibrated confidence threshold (5th percentile of validation
+confidence): below it, `Detection::is_uncertain` is set.
 
 **Storage precision is decoupled from compute.** `quant` declares how `P`
 is stored — `float16` (no scales), or `int8`/`fp8e4m3` with a f32

@@ -168,18 +168,54 @@ _MASKS = {1: (1 << 21) - 1, 2: (1 << 42) - 1, 3: (1 << 63) - 1}
 # Without it, u64 wrapping makes every 5-gram key identical to its suffix
 # 4-gram key; the salt keeps the orders distinct. Must match Rust's N_TAG.
 _N_TAG = [((n * 0x9E3779B97F4A7C15) & MASK64) for n in range(6)]
+# Lexical-channel salts (N_TAG continued at n = 6, 7) and the FNV-1a-64 word
+# hash constants. Must match Rust's TAG_WORD / TAG_BIGRAM / FNV_*.
+_TAG_WORD = (6 * 0x9E3779B97F4A7C15) & MASK64
+_TAG_BIGRAM = (7 * 0x9E3779B97F4A7C15) & MASK64
+FNV_OFFSET = 0xCBF29CE484222325
+FNV_PRIME = 0x100000001B3
+
+
+def _fnv_step(h: int, cp: int) -> int:
+    return ((h ^ cp) * FNV_PRIME) & MASK64
+
+
+def fmix64(h: int) -> int:
+    """MurmurHash3-64 finalizer (the bigram combiner)."""
+    h &= MASK64
+    h ^= h >> 33
+    h = (h * 0xFF51AFD7ED558CCD) & MASK64
+    h ^= h >> 33
+    h = (h * 0xC4CEB9FE1A85EC53) & MASK64
+    h ^= h >> 33
+    return h
+
+
+def word_unigram_key(word_hash: int) -> int:
+    return word_hash ^ _TAG_WORD
+
+
+def word_bigram_key(prev: int, cur: int) -> int:
+    rotl = ((cur << 32) | (cur >> 32)) & MASK64
+    return fmix64(prev ^ rotl) ^ _TAG_BIGRAM
 
 
 def token_keys(text: str, cfg: FeatureConfig = FeatureConfig()) -> list[int]:
-    """Rolling position-major n-gram extraction (must match Rust exactly).
+    """Rolling position-major n-gram extraction + lexical channel (v3).
 
-    One u64 register per word, shifted 21 bits per character; the n-gram
-    keys ending at each character are masks of the register (n <= 3) or the
-    full register (n >= 4, where windows wrap past 64 bits), XORed with the
-    per-n salt. Words are classified first: URL/email/mention/number words
-    pack as their class sentinel instead of their characters.
+    Char n-grams exactly as before: one u64 register per word, shifted 21
+    bits per character; the n-gram keys ending at each character are masks of
+    the register (n <= 3) or the full register (n >= 4, where windows wrap
+    past 64 bits), XORed with the per-n salt. Words are classified first:
+    URL/email/mention/number words pack as their class sentinel instead of
+    their characters.
+
+    Lexical channel (interleaved after each word's char n-grams): the
+    word's FNV-1a-64 hash over the same (lowercased/sentinel) codepoints,
+    then a bigram key over adjacent retained words.
     """
     keys: list[int] = []
+    prev_h: int | None = None
     for word in text.lower().split():
         if word.startswith("#"):
             word = word[1:]  # hashtag -> inner word (kept when it has letters)
@@ -188,8 +224,12 @@ def token_keys(text: str, cfg: FeatureConfig = FeatureConfig()) -> list[int]:
         sentinel = classify_word(word)
         if sentinel is not None:
             chars = [BOW, sentinel, EOW]
+            h = _fnv_step(FNV_OFFSET, sentinel)
         else:
             chars = [BOW] + [ord(ch) for ch in word] + [EOW]
+            h = FNV_OFFSET
+            for cp in chars[1:-1]:
+                h = _fnv_step(h, cp)
         r = 0
         ln = 0
         for c in chars:
@@ -198,6 +238,10 @@ def token_keys(text: str, cfg: FeatureConfig = FeatureConfig()) -> list[int]:
             for n in range(cfg.n_min, min(cfg.n_max, ln) + 1):
                 window = r & _MASKS[n] if n <= 3 else r
                 keys.append(window ^ _N_TAG[n])
+        keys.append(word_unigram_key(h))
+        if prev_h is not None:
+            keys.append(word_bigram_key(prev_h, h))
+        prev_h = h
     return keys
 
 
@@ -267,6 +311,17 @@ def _hash_batch_u64(keys: np.ndarray, hash_id: str, seed: int) -> np.ndarray:
         prod = (k * np.uint64(0x9E3779B97F4A7C15)) & np.uint64(0xFFFFFFFFFFFFFFFF)
         return ((prod >> np.uint64(32)) ^ np.uint64(seed)).astype(np.uint32)
     raise ValueError(f"unknown hash id: {hash_id}")
+
+
+def _fmix64_batch(h: np.ndarray) -> np.ndarray:
+    """Vectorized mirror of fmix64 (u64 wrapping arithmetic)."""
+    h = h.copy()
+    h ^= h >> np.uint64(33)
+    h *= np.uint64(0xFF51AFD7ED558CCD)
+    h ^= h >> np.uint64(33)
+    h *= np.uint64(0xC4CEB9FE1A85EC53)
+    h ^= h >> np.uint64(33)
+    return h
 
 
 def bucket_tokens_flat(
@@ -416,6 +471,35 @@ def bucket_tokens_flat(
             ord_p.append(pos[valid])
             ord_n.append(np.full(int(valid.sum()), n, dtype=np.int8))
             ord_row.append(stream_row[valid])
+
+        # -- 6. Lexical channel: per-word FNV-1a-64 over the interior
+        # codepoints (masked Horner over the flattened vals segments — one
+        # iteration per word-character position, words shorter than the
+        # position masked out), then unigram and adjacent-word bigram keys.
+        # Emission-order contract: interleaved after each word's char
+        # n-grams, encoded as sort keys (row, EOW position, n=6 unigram /
+        # n=7 bigram) — exactly the scalar path's order. Bigrams never cross
+        # text rows. --
+        if len(starts):
+            h = np.full(len(starts), FNV_OFFSET, dtype=np.uint64)
+            for j in range(int(eff_len.max())):
+                sel = eff_len > j
+                cj = vals[seg_starts[sel] + j].astype(np.uint64)
+                h[sel] = (h[sel] ^ cj) * np.uint64(FNV_PRIME)
+            eow_pos = word_base + eff_len + 1
+            keys.append(h ^ np.uint64(_TAG_WORD))
+            ord_p.append(eow_pos)
+            ord_n.append(np.full(len(h), 6, dtype=np.int8))
+            ord_row.append(word_row)
+            same_row = word_row[1:] == word_row[:-1]
+            if same_row.any():
+                prev_h = h[:-1][same_row]
+                cur_h = h[1:][same_row]
+                rotl = (cur_h << np.uint64(32)) | (cur_h >> np.uint64(32))
+                keys.append(_fmix64_batch(prev_h ^ rotl) ^ np.uint64(_TAG_BIGRAM))
+                ord_p.append(eow_pos[1:][same_row])
+                ord_n.append(np.full(int(same_row.sum()), 7, dtype=np.int8))
+                ord_row.append(word_row[1:][same_row])
 
         keys_all = np.concatenate(keys)
         p_all = np.concatenate(ord_p)

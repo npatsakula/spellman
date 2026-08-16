@@ -23,6 +23,21 @@
 //! digit-bearing Cyrillic words (`миллион2020`) always pass through as real
 //! words.
 //!
+//! # Lexical channel (version 3)
+//!
+//! On top of the char n-grams, every word emits two whole-word keys into the
+//! same `u64` key space (fastText's word/wordNgram features; the signal char
+//! n-grams cannot see — function words and long shared stems):
+//! - a **word-unigram** key: FNV-1a-64 over the same lowercased (or
+//!   canonicalized-sentinel) codepoints that feed the packer;
+//! - a **word-bigram** key over adjacent retained words.
+//! Both are XORed with domain-separation salts ([`TAG_WORD`], [`TAG_BIGRAM`])
+//! extending the `N_TAG` scheme, then flow through the feature hasher like
+//! any other key. They are emitted interleaved — after each word's char
+//! n-grams, its unigram key, then its bigram with the previous word — so the
+//! extraction stays streaming and K-truncation keeps a proportional mix of
+//! both channels in long documents.
+//!
 //! The output of [`token_keys`] is stable across versions and identical to the
 //! Python training implementation (verified against
 //! `fixtures/hash_vectors.json`).
@@ -97,6 +112,47 @@ pub const N_TAG: [u64; 6] = {
     }
     tags
 };
+
+/// Domain-separation salt for word-unigram keys — `N_TAG` continued at n = 6.
+pub const TAG_WORD: u64 = 6u64.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+/// Domain-separation salt for word-bigram keys — `N_TAG` continued at n = 7.
+pub const TAG_BIGRAM: u64 = 7u64.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+
+/// FNV-1a 64-bit offset basis and prime: the word-hash channel's mixer.
+/// Chosen over byte-based hashes so the exact same arithmetic (u64
+/// multiply/xor over codepoint values) mirrors losslessly in numpy.
+pub const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+pub const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// One FNV-1a-64 step over a codepoint.
+#[inline(always)]
+pub fn fnv_step(h: u64, cp: u64) -> u64 {
+    (h ^ cp).wrapping_mul(FNV_PRIME)
+}
+
+/// MurmurHash3-64 finalizer: the bigram combiner. Mixes the two word hashes
+/// into one well-spread u64 before the domain salt.
+#[inline(always)]
+pub fn fmix64(mut h: u64) -> u64 {
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    h ^= h >> 33;
+    h
+}
+
+/// Word-unigram key from a word's FNV-1a-64 hash.
+#[inline(always)]
+pub fn word_unigram_key(word_hash: u64) -> u64 {
+    word_hash ^ TAG_WORD
+}
+
+/// Word-bigram key from the hashes of two adjacent retained words.
+#[inline(always)]
+pub fn word_bigram_key(prev: u64, cur: u64) -> u64 {
+    fmix64(prev ^ cur.rotate_left(32)) ^ TAG_BIGRAM
+}
 
 /// Lowercase fast path for the scripts this detector routes: ASCII and the
 /// main Cyrillic block А-Я are simple +0x20 offsets; the Cyrillic supplement
@@ -215,6 +271,11 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
     let n_max = cfg.n_max as usize;
     let mut r: u64 = 0;
     let mut len: usize = 0;
+    // Hash of the previous retained word (None before the first): the
+    // bigram channel's carry. Words dropped by the `#`-strip do not
+    // participate and do not break the chain — bigrams form over the
+    // sequence of retained words.
+    let mut prev_word: Option<u64> = None;
 
     fn feed<F: FnMut(u64)>(
         r: &mut u64,
@@ -243,7 +304,9 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
     // detection needs the full word), then either its lowercased chars or
     // one class sentinel feed the rolling packer between BOW/EOW markers.
     // Pass-through words emit exactly the same key sequence as the previous
-    // char-streaming implementation.
+    // char-streaming implementation. The word's codepoints also feed an
+    // FNV-1a-64 register in lockstep — the packer and the word hash must
+    // see identical codepoints, including case-folding expansions.
     for word in text.split_whitespace() {
         // Hashtag: strip one '#' and classify the inner word (#красноярск is
         // real Cyrillic evidence; #COVID2020 becomes a Num sentinel).
@@ -258,16 +321,24 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
             WordClass::Mention => Some(SENTINEL_MENTION),
             WordClass::Num => Some(SENTINEL_NUM),
         };
+        let mut h: u64 = FNV_OFFSET;
         feed(&mut r, &mut len, BOW as u64, cfg, n_max, &mut f);
         match sentinel {
-            Some(s) => feed(&mut r, &mut len, s as u64, cfg, n_max, &mut f),
+            Some(s) => {
+                feed(&mut r, &mut len, s as u64, cfg, n_max, &mut f);
+                h = fnv_step(h, s as u64);
+            }
             None => {
                 for c in word.chars() {
                     match fast_lower(c) {
-                        Some(lc) => feed(&mut r, &mut len, lc as u64, cfg, n_max, &mut f),
+                        Some(lc) => {
+                            feed(&mut r, &mut len, lc as u64, cfg, n_max, &mut f);
+                            h = fnv_step(h, lc as u64);
+                        }
                         None => {
                             for lc in c.to_lowercase() {
                                 feed(&mut r, &mut len, lc as u64, cfg, n_max, &mut f);
+                                h = fnv_step(h, lc as u64);
                             }
                         }
                     }
@@ -275,6 +346,16 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
             }
         }
         feed(&mut r, &mut len, EOW as u64, cfg, n_max, &mut f);
+        // Lexical channel, interleaved after the word's char n-grams: the
+        // whole-word key, then the adjacent-word bigram key (none before the
+        // first word). Interleaving keeps this streaming — no word-hash
+        // buffer — and makes K-truncation keep a proportional mix of the
+        // char and lexical channels in long documents.
+        f(word_unigram_key(h));
+        if let Some(prev) = prev_word {
+            f(word_bigram_key(prev, h));
+        }
+        prev_word = Some(h);
         r = 0;
         len = 0;
     }
@@ -353,8 +434,9 @@ mod tests {
         let cfg = FeatureConfig { n_min: 1, n_max: 3 };
         let keys = token_keys("ab", &cfg);
         // seq = [BOW, a, b, EOW]; rolling packer emits, per position, all
-        // n-grams ENDING there: 1 + 2 + 3 + 3 = 9 keys.
-        assert_eq!(keys.len(), 9);
+        // n-grams ENDING there: 1 + 2 + 3 + 3 = 9 char keys, then the
+        // word-unigram key.
+        assert_eq!(keys.len(), 10);
         // Position 1 (BOW): 1-gram.
         assert_eq!(keys[0], BOW as u64 ^ N_TAG[1]);
         // Position 2 (a): 1-, 2-gram.
@@ -368,16 +450,87 @@ mod tests {
         assert_eq!(keys[6], EOW as u64 ^ N_TAG[1]);
         assert_eq!(keys[7], pack_ngram(&['b', EOW]) ^ N_TAG[2]);
         assert_eq!(keys[8], pack_ngram(&['a', 'b', EOW]) ^ N_TAG[3]);
+        // Lexical: unigram of the single word (no bigram — first word).
+        assert_eq!(keys[9], word_unigram_key(fnv_ref(&['a' as u64, 'b' as u64])));
+    }
+
+    fn fnv_ref(cps: &[u64]) -> u64 {
+        let mut h = FNV_OFFSET;
+        for &cp in cps {
+            h = (h ^ cp).wrapping_mul(FNV_PRIME);
+        }
+        h
+    }
+
+    #[test]
+    fn lexical_keys_interleaved_per_word() {
+        let cfg = FeatureConfig { n_min: 1, n_max: 3 };
+        let keys = token_keys("ab cd", &cfg);
+        let ha = fnv_ref(&['a' as u64, 'b' as u64]);
+        let hc = fnv_ref(&['c' as u64, 'd' as u64]);
+        // Word 1: 9 char keys, then its unigram (first word: no bigram).
+        assert_eq!(keys[9], word_unigram_key(ha));
+        // Word 2: 9 char keys, its unigram, then the (ab, cd) bigram.
+        assert_eq!(keys[19], word_unigram_key(hc));
+        assert_eq!(keys[20], word_bigram_key(ha, hc));
+        assert_eq!(keys.len(), 21);
+    }
+
+    #[test]
+    fn fmix64_reference_chain() {
+        // Spot-check against a hand-rolled computation.
+        let h = fmix64(0x0123_4567_89ab_cdef);
+        let mut x = 0x0123_4567_89ab_cdefu64;
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        x ^= x >> 33;
+        assert_eq!(h, x);
+        assert_ne!(fmix64(1), fmix64(2));
+    }
+
+    #[test]
+    fn lexical_tags_are_disjoint_from_char_keys() {
+        assert_ne!(TAG_WORD, TAG_BIGRAM);
+        for n in 0..6 {
+            assert_ne!(TAG_WORD, N_TAG[n]);
+            assert_ne!(TAG_BIGRAM, N_TAG[n]);
+        }
+    }
+
+    #[test]
+    fn lexical_channel_cases() {
+        let cfg = FeatureConfig { n_min: 1, n_max: 1 };
+        // Case folding: the word hash sees lowercased codepoints.
+        assert_eq!(token_keys("Привет", &cfg), token_keys("привет", &cfg));
+        // Canonicalized words hash their sentinel, not their characters:
+        // every URL shares one unigram key.
+        let url_a = token_keys("https://t.co/xyz", &cfg);
+        let url_b = token_keys("https://example.com/long/tail", &cfg);
+        assert_eq!(url_a, url_b);
+        // Hashtag strips before hashing.
+        assert_eq!(token_keys("#Да", &cfg), token_keys("да", &cfg));
+        // Dropped words (# alone) neither join nor break the bigram chain:
+        // bigrams form over retained words.
+        let with_drop = token_keys("да # нет", &cfg);
+        let without = token_keys("да нет", &cfg);
+        let ha = fnv_ref(&['д' as u64, 'а' as u64]);
+        let hn = fnv_ref(&['н' as u64, 'е' as u64, 'т' as u64]);
+        assert_eq!(with_drop.last(), Some(&word_bigram_key(ha, hn)));
+        assert_eq!(with_drop, without);
     }
 
     #[test]
     fn rolling_matches_reference_multiset() {
         // The rolling packer must produce exactly the multiset of the
-        // reference per-window packing (order differs, values must not).
+        // reference per-window packing (order differs, values must not),
+        // including the lexical channel.
         let cfg = FeatureConfig { n_min: 1, n_max: 5 };
         for text in ["ab", "abc", "привет мир", "Съешь ещё этих", "гнійеже ґава їжак"] {
             let rolling = token_keys(text, &cfg);
             let mut reference = Vec::new();
+            let mut prev: Option<u64> = None;
             for word in text.to_lowercase().split_whitespace() {
                 let seq: Vec<char> = std::iter::once(BOW).chain(word.chars()).chain(std::iter::once(EOW)).collect();
                 for n in cfg.n_min as usize..=cfg.n_max as usize {
@@ -388,6 +541,12 @@ mod tests {
                         reference.push(pack_ngram(&seq[start..start + n]) ^ N_TAG[n]);
                     }
                 }
+                let h = fnv_ref(&word.chars().map(|c| c as u64).collect::<Vec<_>>());
+                reference.push(word_unigram_key(h));
+                if let Some(p) = prev {
+                    reference.push(word_bigram_key(p, h));
+                }
+                prev = Some(h);
             }
             let mut a = rolling.clone();
             let mut b = reference;
@@ -401,12 +560,18 @@ mod tests {
     fn words_are_isolated_by_whitespace() {
         let cfg = FeatureConfig { n_min: 2, n_max: 2 };
         let keys = token_keys("a b", &cfg);
-        // Two words: [BOW,a,EOW] and [BOW,b,EOW], bigram at positions 2 and 3.
-        assert_eq!(keys.len(), 4);
+        // Two words: [BOW,a,EOW] and [BOW,b,EOW], bigram at positions 2 and 3,
+        // then unigram(a), then bigram-free; word 2 adds unigram(b) + bigram.
+        let ha = fnv_ref(&['a' as u64]);
+        let hb = fnv_ref(&['b' as u64]);
+        assert_eq!(keys.len(), 7);
         assert_eq!(keys[0], pack_ngram(&[BOW, 'a']) ^ N_TAG[2]);
         assert_eq!(keys[1], pack_ngram(&['a', EOW]) ^ N_TAG[2]);
-        assert_eq!(keys[2], pack_ngram(&[BOW, 'b']) ^ N_TAG[2]);
-        assert_eq!(keys[3], pack_ngram(&['b', EOW]) ^ N_TAG[2]);
+        assert_eq!(keys[2], word_unigram_key(ha));
+        assert_eq!(keys[3], pack_ngram(&[BOW, 'b']) ^ N_TAG[2]);
+        assert_eq!(keys[4], pack_ngram(&['b', EOW]) ^ N_TAG[2]);
+        assert_eq!(keys[5], word_unigram_key(hb));
+        assert_eq!(keys[6], word_bigram_key(ha, hb));
     }
 
     #[test]
@@ -420,10 +585,11 @@ mod tests {
     #[test]
     fn n_max_capped_by_word_length() {
         let cfg = FeatureConfig { n_min: 1, n_max: 5 };
-        // Word "ab" wrapped is 4 chars: 4+3+2+1 = 10 n-grams, no 5-grams.
-        assert_eq!(token_keys("ab", &cfg).len(), 10);
-        // Word "abc" wrapped is 5 chars: 5+4+3+2+1 = 15.
-        assert_eq!(token_keys("abc", &cfg).len(), 15);
+        // Word "ab" wrapped is 4 chars: 4+3+2+1 = 10 n-grams, no 5-grams,
+        // plus 1 word-unigram key.
+        assert_eq!(token_keys("ab", &cfg).len(), 11);
+        // Word "abc" wrapped is 5 chars: 5+4+3+2+1 = 15, plus unigram.
+        assert_eq!(token_keys("abc", &cfg).len(), 16);
     }
 
     #[test]
@@ -476,12 +642,13 @@ mod tests {
     #[test]
     fn canonicalized_words_pack_as_sentinels() {
         let cfg = FeatureConfig::default();
-        // A whole URL canonicalizes to [BOW, SENTINEL_URL, EOW] — 6 keys,
-        // identical for every URL regardless of tail.
+        // A whole URL canonicalizes to [BOW, SENTINEL_URL, EOW] — 6 char
+        // keys + 1 unigram over the sentinel, identical for every URL
+        // regardless of tail.
         let a = token_keys("https://t.co/3Kr7yzeYLC", &cfg);
         let b = token_keys("https://example.com/other/tail", &cfg);
         assert_eq!(a, b);
-        assert_eq!(a.len(), 6);
+        assert_eq!(a.len(), 7);
 
         // Distinct per class.
         let url = token_keys("https://x.io", &cfg);

@@ -78,6 +78,11 @@ pub struct ModelMetadata {
     /// without this are incompatible.
     #[serde(default)]
     pub canonicalize: bool,
+    /// Lexical channel flag (version 3 feature space): word-unigram and
+    /// word-bigram keys hashed into the same bucket space as the char
+    /// n-grams. Models with and without this are incompatible.
+    #[serde(default)]
+    pub lexical: bool,
     /// Calibrated confidence threshold: below this, treat detection as
     /// uncertain (GlotLID-style θ).
     #[serde(default)]
@@ -175,16 +180,23 @@ impl Model {
         if metadata.format != "spellman-model" {
             return Err(ModelError::Metadata(format!("unexpected format: {}", metadata.format)));
         }
-        if metadata.version != 2 {
+        if metadata.version != 3 {
             return Err(ModelError::Metadata(format!(
-                "unsupported version: {} (this runtime speaks version 2, the \
-                 canonicalizing feature space)",
+                "unsupported version: {} (this runtime speaks version 3, the \
+                 canonicalizing + lexical feature space)",
                 metadata.version
             )));
         }
         if !metadata.canonicalize {
             return Err(ModelError::Metadata(
                 "model predates token-class canonicalization; retrain with the \
+                 current train/ pipeline"
+                    .into(),
+            ));
+        }
+        if !metadata.lexical {
+            return Err(ModelError::Metadata(
+                "model predates the lexical word-ngram channel; retrain with the \
                  current train/ pipeline"
                     .into(),
             ));
@@ -354,8 +366,9 @@ pub(crate) mod test_support {
     pub fn fixture_metadata() -> ModelMetadata {
         ModelMetadata {
             format: "spellman-model".into(),
-            version: 2,
+            version: 3,
             canonicalize: true,
+            lexical: true,
             languages: Lang::ALL.iter().map(|l| l.code().to_string()).collect(),
             log2_d: 12,
             hash: "fmix32".into(),
@@ -462,6 +475,23 @@ mod tests {
             // Padding row must be exactly zero through any storage format.
             assert!(model.table[d * NUM_LANGS..].iter().all(|v| *v == 0.0));
         }
+    }
+
+    #[test]
+    fn rejects_version_2_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        test_support::write_test_model(tmp.path());
+        let meta_path = tmp.path().join("model.json");
+        let mut meta: ModelMetadata = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        meta.version = 2;
+        meta.lexical = false;
+        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+        let err = Model::load(tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("version 3"), "got: {err}");
+        // A v3 artifact without the lexical flag is equally rejected.
+        meta.version = 3;
+        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+        assert!(Model::load(tmp.path()).is_err());
     }
 
     #[test]
