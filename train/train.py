@@ -179,12 +179,13 @@ def export(model: SpellmanNet, cfg: Config, theta: float, out_dir: Path) -> None
     p16 = (emb @ w.T).astype(np.float16)  # [D+1, C]
     p16[-1, :] = 0  # keep the padding row exactly zero after rounding
 
+    # Ship only what the runtime loads (P + bias): 8 MB instead of 41 MB at
+    # D = 2^17. The unfused E/W are training-side state — the loader never
+    # reads them.
     save_file(
         {
             "P": p16,
             "bias": b.astype(np.float16),
-            "E": emb.astype(np.float16),
-            "W": w.astype(np.float16),
         },
         str(out_dir / "model.safetensors"),
     )

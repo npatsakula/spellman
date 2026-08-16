@@ -175,9 +175,10 @@ The head is linear, so at export `scores = mean(sign · E[bucket]) · W + b`
 collapses to `(1/n) Σ P[bucket] · ±1 + b` with **`P = E·W`**, one
 `[D+1, C]` table. Inference never touches an embedding table or a matrix
 multiply: per token it's one table lookup, one conditional negate, C
-additions. Row `D` is the padding row, exactly zero. The training pipeline
-additionally stores unfused `E`/`W` for reference; the runtime ignores
-them.
+additions. Row `D` is the padding row, exactly zero. The exported
+artifact carries only `P` and `bias` — everything the runtime loads
+(8 MB instead of 41 MB at D = 2^17); the unfused `E`/`W` are
+training-side state.
 
 Signed hashing folds into the table *layout* at load: the JIT gather
 table is `cat([P, -P])` of shape `[2(D+1), C]`, so a token's sign selects

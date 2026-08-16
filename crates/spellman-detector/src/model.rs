@@ -3,10 +3,10 @@
 //! A model directory contains:
 //! - `model.json` — the runtime contract: language inventory (column order),
 //!   bucket count, hash id/seed, n-gram config, confidence threshold;
-//! - `model.safetensors` — `P` (folded score table, `[D+1, NUM_LANGS]` f32,
-//!   row `D` all-zero for padding) and `bias` (`[NUM_LANGS]` f32). The
-//!   training pipeline additionally stores the unfused `E` / `W` tensors for
-//!   reference; the loader ignores them.
+//! - `model.safetensors` — `P` (folded score table, `[D+1, NUM_LANGS]` f16,
+//!   cast to f32 at load; row `D` all-zero for padding) and `bias`
+//!   (`[NUM_LANGS]` f16). These two are everything the runtime reads; the
+//!   unfused `E` / `W` are training-side state and are not shipped.
 //!
 //! `P` is the algebraic fold of the trained model: scores are
 //! `mean(E[token]) · W`, and because the head is linear this equals
