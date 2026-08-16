@@ -199,24 +199,21 @@ Device selection follows svod's convention — weights land on the default
 device at load time, so call `svod_tensor::set_default_device(...)` before
 loading for GPU execution.
 
-## Status and next steps
+## FAQ
 
-The current model — the mixed-domain recipe above (dim 128, D = 2^17,
-f16 export, canonicalizing feature space v2: model.json carries
-`"version": 2, "canonicalize": true` and the runtime rejects
-incompatible models at load) — is published at
-[vpermilp/spellman](https://huggingface.co/vpermilp/spellman); it is not
-tracked in this repo. Storage is precision-decoupled: `P` may ship as
-f16, int8 or fp8 behind a `quant` spec (int8 and fp8 measured lossless
-at ±0.02pp, half the artifact — see the [design doc](docs/design.md)).
+### Why not just extend Whichlang with new languages?
 
-Not yet done: hard negatives at ~10× scale (rus-attraction on short
-texts is the top residual error), wild referees for more languages
-(rusentitweet covers rus only), whatlang baseline, GPU (CUDA/AMD) runs,
-Chechen Wikipedia dump held in reserve (146 MB).
-
-All 31 Rust tests green (24 detector + 5 language-crate + 2 CLI),
-including the Rust↔Python feature-parity fixture.
+There is nothing to extend — whichlang ships a fixed 16-language scorer
+(murmur2-hashed char n-grams into a linear table) with no training
+pipeline and no data engine, so adding a class means rebuilding both.
+And the hard part of covering 20 more Cyrillic languages is not the
+extra labels but the close pairs: they need curated corpora and hygiene
+(a `җ` in a Bashkir row is Tatar contamination; a `ҡ` is genuine
+Bashkir), a canonicalizing featurizer so URLs and @mentions stop
+outvoting real words, and shared-embedding capacity so ru/be/uk can
+coexist. whichlang's 99.2% Russian exists precisely because nothing
+competes with it — it covers 10 of our 30 classes with a single
+Cyrillic one, and scores 14% all-rows on our workload.
 
 ## References
 
