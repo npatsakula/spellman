@@ -55,7 +55,7 @@ our workload. Rerun:
 | lingua 1.8 (high) | 17/30 | 27.58% | 95.86% | 68.55% | 97.69% | 319 |
 | lingua 1.8 (low) | 17/30 | 26.67% | 92.70% | 65.38% | 93.17% | 401 |
 
-(85,283 / 37,051 rows; Apple Silicon; spellman k=1024 under BEAM=16;
+(85,283 / 37,051 rows; Apple M1 Pro; spellman k=1024 under BEAM=16;
 µs/sample from the held-out file in this harness — the CLI eval path on
 the same data reads 4.6 µs/sample. "all rows" counts gold languages
 outside a tool's inventory as errors — what a 30-class Cyrillic workload
@@ -111,26 +111,20 @@ weakest class), tat 0.99, mhr/bel/bak 0.99, sah 0.98 — the residual
 confusions are the genuinely hard ones (uzn P 0.87, tgk R 0.92 from data
 thinness, rus-attraction on short low-resource texts).
 
-Performance (Apple Silicon, fp16 svod JIT plans, k=1024, full held-out
-mix — 85,283 documents; medians of repeated runs):
+Performance (fp16 svod JIT plans, BEAM=16, k=1024, full held-out mix —
+85,283 documents):
 
-| scheduler | bulk | single document | plan prepare |
-|---|---|---|---|
-| default | 9.6 µs/sample | 22.4 µs/doc | 0.2 s |
-| BEAM=2 | 5.5 µs/sample | 3.8 µs/doc | 0.3 s |
-| BEAM=4 | 5.4 µs/sample | 3.7 µs/doc | 0.3 s |
-| BEAM=8 | 4.6 µs/sample | 3.7 µs/doc | 0.3 s |
-| **BEAM=16** | **4.6 µs/sample (~215k docs/s)** | **3.7 µs/doc** | 0.3 s |
-| BEAM=32 | 4.9 µs/sample | 3.8 µs/doc | 0.4 s |
+| hardware | bulk | single document |
+|---|---|---|
+| Apple M1 Pro | 4.6 µs/sample (~215k docs/s) | 3.7 µs/doc |
+| AMD AI 395 Max | — | — |
 
-The beam scheduler is worth ~2× bulk and ~6× single-document over the
-default heuristics. Bulk keeps improving through BEAM=16 — the sweet
-spot: the fastest and most stable numbers with no extra plan-preparation
-cost — while single-document saturates at width 4 and BEAM≥24 regresses
-as prepare time grows (run-to-run spread is ±0.3 µs/sample). Scoring is
-pure table lookups after the algebraic fold `P = E·W` — no embedding
-gathers, no matmul. fmix32 bucket spread on real n-grams: chi²/dof ≈
-1.006 (uniform ≈ 1.0).
+(BEAM=16 is the measured sweet spot on the M1 Pro — the beam scheduler
+is worth ~2× bulk / ~6× single-document over the default heuristics; the
+full sweep lives in the [design doc](docs/design.md).) Scoring is pure
+table lookups after the algebraic fold `P = E·W` — no embedding gathers,
+no matmul. fmix32 bucket spread on real n-grams: chi²/dof ≈ 1.006
+(uniform ≈ 1.0).
 
 ## Datasets
 
