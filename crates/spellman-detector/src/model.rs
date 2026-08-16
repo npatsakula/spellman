@@ -263,10 +263,12 @@ fn resolve_table(
     Ok((table, bias))
 }
 
-/// Read a tensor and cast it to f32 (f16 and f32 storage both legal on the
+/// Read a tensor as host f32 values (f16 and f32 storage both legal on the
 /// cast lattice; quantized artifacts store `bias`/`scales` in f32 anyway).
-/// The cast must happen BEFORE `realize()` — casting a realized tensor
-/// yields a lazy child with no buffer.
+/// The cast must happen before `realize()` — casting a realized tensor
+/// yields a lazy child with no buffer. Host readout genuinely must
+/// materialize (these values never enter a graph); the JIT table path uses
+/// `.contiguous()` boundaries instead, see `jit::SpellmanModel::from_table`.
 fn read_cast_f32(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<f32>, ModelError> {
     let tensor = sd.get(name).cloned().ok_or_else(|| ModelError::MissingTensor(name.to_owned()))?;
     let mut cast = tensor.cast(svod_dtype::DType::Float32)?;

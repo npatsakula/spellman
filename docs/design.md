@@ -219,9 +219,10 @@ that knows schemes), so the runtime graph and every tool are unchanged;
 export. Measured on the shipped model: int8 and fp8 both land within
 ±0.02pp on both referees while roughly halving the artifact (3.9–4.5MB
 vs 7.9MB). True int8 *compute* was prototyped and rejected on evidence:
-the i8→i16→i32 cast chain that svod's type lattice forces defeats the
-beam scheduler's fusion — with `BEAM=2` the int8 graph is 18% slower
-than f16 at K=1024 (`examples/int8_bench.rs` measures the split).
+the i8→i16→i32 cast chain that svod's type lattice forces wins big
+without a scheduler (−40..55% execute-only) but never beats the f16
+graph under the beam scheduler at any width tested (BEAM 2/4/8;
+`examples/int8_bench.rs` measures the split).
 
 ## Runtime
 
@@ -255,9 +256,19 @@ Shape specialization is the core trick:
 rayon-parallel feature extraction writes signed bucket indices straight
 into the buffer through a typed view — no staging allocation, no copy.
 
-Measured on the shipped model (Apple Silicon): ~5.3 µs/sample bulk
-(~180k docs/s), ~5.4 µs single-document with the beam scheduler
-(`BEAM=2` — worth 5.8× over default heuristics on this graph).
+Measured on the shipped model (Apple Silicon, k=1024, full held-out
+mix): **5.1 µs/sample bulk** (~195k docs/s) and **3.7 µs single
+document** at `BEAM=4`; the beam scheduler is worth ~2× bulk / ~6×
+single over the default heuristics, and widths beyond 4 don't pay back
+their longer plan preparation.
+
+The weight constant is built born-2-D (`Tensor::from_raw_bytes`) so the
+buffer → cast → neg → cat chain stays fully lazy and the plan folds it
+at prepare — the svod state-dict load idiom. A reshape between the
+buffer and the cast breaks the embedding fusion (~2.4×, measured), and
+explicit boundaries are worse still: an eager `realize()` at load pays
+an out-of-plan scheduling pass and blocks inlining; a `contiguous()`
+marker lands on the execution path (60× single-doc, measured).
 
 ## The Rust↔Python parity contract
 
@@ -279,10 +290,10 @@ Measured decisions, in the order they pay off:
 | algebraic fold P = E·W | scoring = lookup + add, no matmul (whichlang-class throughput) |
 | zero-init embeddings | untrained buckets → exactly-zero logits (fixed `"sweatshirt"` → bul 1.0) |
 | sentinel canonicalization | wild referee 72.49% → 92.35%; ~30 neutral n-grams vs ~125 per URL |
-| precision-decoupled storage (int8/fp8 `P` + scales) | −50% artifact at ±0.02pp; int8 *compute* rejected: cast chain defeats BEAM=2 fusion (+18% at K=1024) |
+| precision-decoupled storage (int8/fp8 `P` + scales) | −50% artifact at ±0.02pp; int8 *compute* rejected: the cast chain wins only scheduler-less, never under beam (2/4/8 measured) |
 | hand word classifier | 29 ns/word vs 67 ns (DFA) / 83 ns (PikeVM) |
 | high-bit buckets + fmix32 | chi²/dof 1.006 at D = 2^17; XXH3 rejected |
-| constant-K JIT plan | ~5.3 µs/sample bulk; BEAM=2 adds 5.8× on the B=1 graph |
+| constant-K JIT plan | 5.1 µs/sample bulk, 3.7 µs single-doc (BEAM=4); beam = ~2× bulk / ~6× single over the default scheduler |
 | fp16 end-to-end graph | no cast kernels on the replay path; exact per-value loads, wide LID logit margins |
 | zero-copy featurization | rayon writes indices directly into the plan's host-mapped buffer |
 | numpy-vectorized training featurizer | batch featurization asserted bit-identical to the scalar contract |

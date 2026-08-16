@@ -49,15 +49,16 @@ our workload. Rerun:
 
 | detector | our classes | held-out: all rows | held-out: its subset | Tatoeba: all rows | Tatoeba: its subset | µs/sample |
 |---|---|---|---|---|---|---|
-| spellman (bulk) | 30/30 | **98.15%** | **98.15%** | **98.32%** | **98.32%** | 8.9 |
-| spellman (single) | 30/30 | **98.15%** | **98.15%** | **98.32%** | **98.32%** | 36 |
+| spellman (bulk) | 30/30 | **98.15%** | **98.15%** | **98.32%** | **98.32%** | 5.2 |
+| spellman (single) | 30/30 | **98.15%** | **98.15%** | **98.32%** | **98.32%** | 10.3 |
 | whichlang 0.1 | 10/30 | 14.06% | 97.46% | 32.28% | 99.67% | **1.5** |
-| lingua 1.8 (high) | 17/30 | 27.58% | 95.86% | 68.55% | 97.69% | 318 |
-| lingua 1.8 (low) | 17/30 | 26.67% | 92.70% | 65.38% | 93.17% | 402 |
+| lingua 1.8 (high) | 17/30 | 27.58% | 95.86% | 68.55% | 97.69% | 319 |
+| lingua 1.8 (low) | 17/30 | 26.67% | 92.70% | 65.38% | 93.17% | 401 |
 
-(85,283 / 37,051 rows; Apple Silicon; spellman k=1024; µs from the
-held-out file. "all rows" counts gold languages outside a tool's
-inventory as errors — what a 30-class Cyrillic workload actually sees.)
+(85,283 / 37,051 rows; Apple Silicon; spellman k=1024 under BEAM=4;
+µs/sample from the held-out file. "all rows" counts gold languages
+outside a tool's inventory as errors — what a 30-class Cyrillic workload
+actually sees.)
 
 **Accuracy by text length** — supported-subset accuracy per char-length
 bucket (the buckets `assess` uses; for spellman the subset is all rows):
@@ -101,20 +102,29 @@ What the numbers say:
   is precisely the capacity that makes the other 20 Cyrillic columns
   work.
 - **Latency**: whichlang is the fastest per document (tiny 16-class
-  model) at ~6× spellman bulk; lingua high-accuracy is ~36× slower than
-  spellman bulk. spellman's ~5 µs/sample tuned bulk figure is in the
-  performance section above.
+  model) at ~3.5× spellman bulk; lingua high-accuracy is ~61× slower
+  than spellman bulk (319 vs 5.2 µs/sample, BEAM=4).
 
 Per-language on the held-out mix: che F1 1.00 (from the campaign's
 weakest class), tat 0.99, mhr/bel/bak 0.99, sah 0.98 — the residual
 confusions are the genuinely hard ones (uzn P 0.87, tgk R 0.92 from data
 thinness, rus-attraction on short low-resource texts).
 
-Performance (Apple Silicon, fp16 svod JIT plans): **~5.3 µs/sample bulk
-(~180k docs/s)**, ~5.4 µs single-document with the beam scheduler
-(BEAM=2, worth 5.8× on that graph). Scoring is pure table lookups after
-the algebraic fold `P = E·W` — no embedding gathers, no matmul. fmix32
-bucket spread on real n-grams: chi²/dof ≈ 1.006 (uniform ≈ 1.0).
+Performance (Apple Silicon, fp16 svod JIT plans, k=1024, full held-out
+mix — 85,283 documents):
+
+| scheduler | bulk | single document | plan prepare |
+|---|---|---|---|
+| default | 10.4 µs/sample | 22.4 µs/doc | 0.17 s |
+| BEAM=2 | 5.6 µs/sample | 3.8 µs/doc | 0.4 s |
+| **BEAM=4** | **5.1 µs/sample (~195k docs/s)** | **3.7 µs/doc** | 0.4 s |
+| BEAM=8 | 5.1 µs/sample | 3.8 µs/doc | 0.4 s |
+
+The beam scheduler captures its whole win at width 2–4 (~2× bulk, ~6×
+single-document); wider beams don't pay back their longer plan
+preparation. Scoring is pure table lookups after the algebraic fold
+`P = E·W` — no embedding gathers, no matmul. fmix32 bucket spread on
+real n-grams: chi²/dof ≈ 1.006 (uniform ≈ 1.0).
 
 ## Datasets
 

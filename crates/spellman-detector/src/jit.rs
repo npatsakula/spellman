@@ -46,8 +46,18 @@ impl SpellmanModel {
     /// realization instead of staging through host memory twice.
     pub fn from_table(table: &[f32], num_langs: usize) -> Result<SpellmanModel, svod_tensor::error::Error> {
         let rows = table.len() / num_langs;
-        let p = Tensor::from_slice(table)
-            .try_reshape(&[rows as isize, num_langs as isize])?
+        // The constant buffer must be born 2-D: a reshape op between the
+        // buffer and the cast breaks the embedding fusion (~2.4× on the
+        // BEAM-scheduled graph, measured), and explicit boundaries are
+        // worse still — an eager realize() blocks inlining, a contiguous()
+        // marker lands on the execution path (60× single-doc). buffer →
+        // cast → neg → cat is the state-dict load idiom, fully lazy for
+        // the plan to fold.
+        let p = Tensor::from_raw_bytes(
+                bytemuck::cast_slice(table),
+                &[rows, num_langs],
+                svod_dtype::DType::Float32,
+            )?
             .cast(svod_dtype::DType::Float16)?;
         let neg = p.try_neg()?;
         let jit_table = Tensor::cat(&[&p, &neg], 0)?;
