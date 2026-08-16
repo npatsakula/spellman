@@ -1,0 +1,6 @@
+[package]
+name = "spellman-language"
+version = "0.1.0"
+edition = "2024"
+description = "Language inventory for spellman: macro-defined per-language metadata (ISO 639-1/639-3, NLLB-200, Whisper codes, names, script) and script classification"
+license = "MIT"

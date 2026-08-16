@@ -1,0 +1,24 @@
+# build artifacts (root workspace + standalone benchmarks crate)
+target/
+
+# vendored svod checkout: separate project consumed by path dependency
+# (a local symlink to a sibling checkout works too)
+/svod
+
+# session / editor artifacts
+.zcode/
+.claude/
+.DS_Store
+
+# data pipeline: downloads, caches, generated mixes — all rebuildable
+train/cache/
+train/data_mix/
+train/tatoeba/
+train/.venv/
+__pycache__/
+*.pyc
+*.tar.bz2
+
+# trained-model artifacts: published on Hugging Face, or produced locally
+# by train/spellman-train — never tracked
+/model/

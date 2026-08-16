@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/spellman-language",
+    "crates/spellman-detector",
+    "crates/spellman-cli",
+]
+# svod is a separate checkout with its own [workspace]; excluding it keeps its
+# path-dep crates rooted there instead of being auto-adopted into this one.
+# benchmarks is standalone on purpose: lingua's model crates are a heavy
+# build that must not slow down everyday workspace commands.
+exclude = ["svod", "benchmarks"]

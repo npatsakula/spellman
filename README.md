@@ -1,0 +1,231 @@
+# spellman
+
+Cyrillic-optimized language detection: general coverage of the G10 world
+languages plus ~20 Cyrillic-script languages (30 classes), built to beat
+existing detectors exactly where they are weakest — closely-related
+Cyrillic pairs (ru/be/uk, bg/mk/sr, kk/ky/tt/ba) on wild, short, real
+internet text — at whichlang-class CPU speed.
+
+- **[docs/design.md](docs/design.md)** — hashing, tokenization &
+  canonicalization, model architecture, the algebraic fold, svod JIT
+  runtime, measured optimizations.
+- **[docs/training.md](docs/training.md)** — the data pipeline: adding
+  sources, normalization, hygiene, hard negatives, training, evaluation.
+
+## Results
+
+Head-to-head against fastText lid.176 (Meta's 176-language model) on
+identical eval files, including lingua-style granularity ladders
+(accuracy on single words / word pairs / triples / whole texts derived
+from the same eval data):
+
+| eval | rung | spellman | fastText lid.176 |
+|---|---|---|---|
+| held-out mix (85,283, pristine test) | text | **98.15%** | 90.45%* |
+| Tatoeba (37,051, out-of-domain) | word / pair / triple | **65.9 / 84.7 / 92.5** | 59.0 / 79.0 / 87.9 |
+| Tatoeba (37,051, out-of-domain) | text | **98.32%** | 94.90%* |
+| rusentitweet (2,679 wild Russian tweets) | text | **92.35%**† | — |
+
+\* fastText scored on the subset of languages its label set supports
+(24/30; no kpv/udm labels, and its `uz` is Latin-script Uzbek — it scores
+1.15% on our Cyrillic uzn). Single words are the hard rung for everyone:
+rus drops to ~45% on words (uk/be absorb them), exactly the close-pair
+problem spellman is built around; it recovers to ~97% by full text.
+
+† wild referee: real Russian tweets, 78% containing Latin words, 61%
+@mentions, 20% URLs — the register clean corpora never show. Before the
+canonicalizing featurizer + wild/short augmentation this scored 72.49%.
+
+### Against the Rust LID crates
+
+[`benchmarks/`](benchmarks) (standalone crate, `lid-bench`) runs spellman,
+[whichlang] and [lingua] on **identical rows** — the full eval files
+below (`--rows-per-lang 0`; a seeded 500/language balanced sample is the
+default for quick runs). Every tool gets the same texts and its own
+language inventory as the detector: lingua is built from exactly the 17
+of our languages it supports, with preloaded models — its best shot on
+our workload. Rerun:
+`cd benchmarks && cargo run --release -- --model ../model --rows-per-lang 0 ../model/eval_test.tsv --by-length --per-lang`.
+
+| detector | our classes | held-out: all rows | held-out: its subset | Tatoeba: all rows | Tatoeba: its subset | µs/sample |
+|---|---|---|---|---|---|---|
+| spellman (bulk) | 30/30 | **98.15%** | **98.15%** | **98.32%** | **98.32%** | 8.9 |
+| spellman (single) | 30/30 | **98.15%** | **98.15%** | **98.32%** | **98.32%** | 36 |
+| whichlang 0.1 | 10/30 | 14.06% | 97.46% | 32.28% | 99.67% | **1.5** |
+| lingua 1.8 (high) | 17/30 | 27.58% | 95.86% | 68.55% | 97.69% | 318 |
+| lingua 1.8 (low) | 17/30 | 26.67% | 92.70% | 65.38% | 93.17% | 402 |
+
+(85,283 / 37,051 rows; Apple Silicon; spellman k=1024; µs from the
+held-out file. "all rows" counts gold languages outside a tool's
+inventory as errors — what a 30-class Cyrillic workload actually sees.)
+
+**Accuracy by text length** — supported-subset accuracy per char-length
+bucket (the buckets `assess` uses; for spellman the subset is all rows):
+
+| bucket | held-out mix (n) | spellman | whichlang | lingua high |
+|---|---|---|---|---|
+| ≤20 chars | 1,089 | 92.4% | **93.7%** | 88.8% |
+| 21–100 | 41,613 | **97.8%** | 96.4% | 93.8% |
+| >100 | 42,581 | 98.7% | **98.8%** | 98.2% |
+
+| bucket | Tatoeba (n) | spellman | whichlang | lingua high |
+|---|---|---|---|---|
+| ≤20 chars | 1,567 | 95.7% | **97.5%** | 92.8% |
+| 21–100 | 34,674 | 98.4% | **99.7%** | 97.8% |
+| >100 | 810 | 99.9% | 99.5% | **100.0%** |
+
+(The held-out short bucket is small because the test split is pristine —
+short/wild augmentation lives in train/val only.)
+
+What the numbers say:
+
+- **Coverage dominates a Cyrillic workload.** whichlang knows one
+  Cyrillic language of our 21 (rus); lingua knows 8. For the other
+  languages of the region their answer is structurally wrong, which is
+  the 14–68% all-rows column.
+- **Short text is lingua's advertised strength — and spellman wins it**:
+  on ≤20-char rows spellman leads lingua high-accuracy by 3–4pp on both
+  referees (95.7 vs 92.8 Tatoeba, 92.4 vs 88.8 held-out), and lingua's
+  low-accuracy mode collapses to 75–83%. Mid-length is spellman's
+  biggest gap over lingua (97.8 vs 93.8 held-out); at >100 chars
+  everyone converges to 98–100% and the differences are coverage, not
+  quality.
+- **On the languages they share with us, spellman wins the close pairs**
+  (held-out, full file): ukr 97.2% vs lingua 93.5, mkd 97.5% vs 92.5,
+  srp 98.2% vs 97.0, bul 96.9% vs 95.5, kaz 97.6% vs 97.2, mon 98.7% vs
+  97.5, with bel at parity (98.8 vs 98.9) and lingua slightly ahead on
+  the big Latin languages (eng 99.2% vs our 98.8).
+- **whichlang's 99.2% on Russian is real — and the trade is visible:**
+  its 16-class world contains no ukr/bel/kaz to confuse with Russian.
+  spellman's rus (94.0%) bleeds mostly into those close classes, which
+  is precisely the capacity that makes the other 20 Cyrillic columns
+  work.
+- **Latency**: whichlang is the fastest per document (tiny 16-class
+  model) at ~6× spellman bulk; lingua high-accuracy is ~36× slower than
+  spellman bulk. spellman's ~5 µs/sample tuned bulk figure is in the
+  performance section above.
+
+Per-language on the held-out mix: che F1 1.00 (from the campaign's
+weakest class), tat 0.99, mhr/bel/bak 0.99, sah 0.98 — the residual
+confusions are the genuinely hard ones (uzn P 0.87, tgk R 0.92 from data
+thinness, rus-attraction on short low-resource texts).
+
+Performance (Apple Silicon, fp16 svod JIT plans): **~5.3 µs/sample bulk
+(~180k docs/s)**, ~5.4 µs single-document with the beam scheduler
+(BEAM=2, worth 5.8× on that graph). Scoring is pure table lookups after
+the algebraic fold `P = E·W` — no embedding gathers, no matmul. fmix32
+bucket spread on real n-grams: chi²/dof ≈ 1.006 (uniform ≈ 1.0).
+
+## Datasets
+
+| dataset | languages | role |
+|---|---|---|
+| FineWeb-2 per-language configs | 21 Cyrillic + spa/fra/por/deu | backbone, line-window sampled (short-text realism, not Wikipedia) |
+| FineWeb `sample-10BT` | eng | English backbone (FineWeb-2 has no eng) |
+| Tatoeba training remainder | 26 | ~104k clean sentences; eval half is a frozen referee |
+| Glot500 slices | tat, tgk, sah | weak-language top-ups |
+| Native gated corpora | tgk (tajik-corpus), sah (sakha-corpus-mono) | in-domain text for the two thinnest backbones |
+| Parallel/community corpora | tat (162k parallel + Wikipedia + `tat_Latn`), bak (Telegram), chv (community), tyv (linguist web text), kir (Sputnik), udm (ai-forever + zerpal), mhr (literary), mkd (tweets) | per-language top-ups for the weak classes |
+| Chechen stack | Leipzig community 2017+2023, OPUS translatewiki, NM 171k ce-ru parallel | che: weakest class → F1 1.00 |
+| rusentitweet (train split) | rus | wild-register training rows; eval split is the frozen wild referee |
+| FineWeb-2 `_removed` subsets | 12 configs | model-labeled hard negatives (twin-protected) |
+
+All sources flow through the pluggable adapter registry
+(`train/sources/`), are hygiene-audited (twin-protected judges, ~1.3k
+foreign rows removed), and mixed with deterministic crc32 splits —
+details in the [training guide](docs/training.md).
+
+## Quick start
+
+The detector depends on [svod] by path: clone it inside the repo root
+before the first build (`git clone https://github.com/npatsakula/svod`
+→ `./svod`). The trained model is published on Hugging Face and is not
+tracked in git — fetch it into `./model`:
+
+```bash
+git clone https://github.com/npatsakula/svod   # → ./svod
+huggingface-cli download vpermilp/spellman --local-dir model
+cargo build --release -p spellman-cli
+
+# stdin in, ISO 639-3 out
+echo "Съешь ещё этих мягких французских булок" | ./target/release/spellman detect
+printf 'Қазақша жазбалар\nThe quick brown fox\n' | ./target/release/spellman detect --lines
+printf 'Қазақша\n' | ./target/release/spellman detect --json
+# {"confidence":0.99…,"lang":"kaz","name":"Kazakh","uncertain":false}
+
+./target/release/spellman eval train/tatoeba_eval.tsv  # accuracy + throughput
+./target/release/spellman bench --single               # probes + timings
+```
+
+In code (the language inventory is re-exported by the detector — always
+use `spellman_detector::Lang` rather than a separate
+`spellman-language` dependency):
+
+```rust
+use spellman_detector::{BulkDetector, Lang, SingleDetector};
+
+// One document at a time — B=1 is baked into the plan (static kernels).
+let mut single = SingleDetector::load("model".as_ref(), 1024)?;
+let d = single.detect("Съешь ещё этих мягких французских булок")?;
+
+// Bulk batches — constant K, rebindable batch, rayon featurization written
+// zero-copy straight into the plan's input buffer.
+let mut bulk = BulkDetector::load("model".as_ref(), 1024, 512)?;
+let results = bulk.detect_batch(&["Привет", "Hello"])?;
+```
+
+Device selection follows svod's convention — weights land on the default
+device at load time, so call `svod_tensor::set_default_device(...)` before
+loading for GPU execution.
+
+## Layout
+
+```
+crates/spellman-language/  dependency-free language inventory (one macro
+                           table: ISO 639-1/639-3, NLLB, Whisper codes,
+                           names, script) + script classification
+crates/spellman-detector/  features (canonicalizing n-gram tokenizer),
+                           hashing, folded model, routing, svod JIT plans,
+                           `assess` metrics CLI, criterion benches,
+                           Rust↔Python parity fixture
+crates/spellman-cli/       the `spellman` binary: detect / eval / bench
+benchmarks/                standalone `lid-bench` crate: spellman vs
+                           whichlang vs lingua on identical eval rows
+train/                     Python pipeline (uv): pluggable data sources,
+                           mixing/augmentation, hygiene, hard negatives,
+                           training + folded export
+model/                     trained-model artifacts (fetched from Hugging
+                           Face or produced by training; gitignored)
+docs/                      design document, training guide
+```
+
+All 31 Rust tests green (24 detector + 5 language-crate + 2 CLI),
+including the Rust↔Python feature-parity fixture.
+
+## Status and next steps
+
+The current model — the mixed-domain recipe above (dim 128, D = 2^17,
+f16 export, canonicalizing feature space v2: model.json carries
+`"version": 2, "canonicalize": true` and the runtime rejects
+incompatible models at load) — is published at
+[vpermilp/spellman](https://huggingface.co/vpermilp/spellman); it is not
+tracked in this repo.
+
+Not yet done: hard negatives at ~10× scale (rus-attraction on short
+texts is the top residual error), wild referees for more languages
+(rusentitweet covers rus only), whatlang baseline, GPU (CUDA/AMD) runs,
+Chechen Wikipedia dump held in reserve (146 MB).
+
+## References
+
+Design decisions are grounded in: Weinberger et al. 2009 (feature
+hashing), the fastText "Bag of Tricks" line (Joulin et al. 2016; GlotLID
+/ OpenLID are the current open-LID SOTA, all fastText-style),
+rurban/SMHasher quality tables (murmur2 bias vs fmix32; xxh3 low-bit
+failures), the FineWeb-2 report (arXiv:2506.20920), and DSL shared-task
+results showing 95%+ is achievable on bg/mk-class pairs with
+discriminative n-gram models.
+
+[whichlang]: https://github.com/quickwit-oss/whichlang
+[lingua]: https://github.com/pemistahl/lingua-rs
+[svod]: https://github.com/npatsakula/svod

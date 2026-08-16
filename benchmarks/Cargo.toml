@@ -1,0 +1,27 @@
+[package]
+name = "spellman-benchmarks"
+version = "0.1.0"
+edition = "2024"
+description = "Third-party LID baselines (whichlang, lingua) vs spellman: accuracy + latency on identical eval rows"
+license = "MIT"
+publish = false
+
+# Standalone crate on purpose (excluded from the root workspace): lingua's
+# model crates are a heavy build that must never slow down `cargo test`.
+# Build from this directory:
+#   cargo run --release -- --model ../model ../model/eval_test.tsv
+
+[[bin]]
+name = "lid-bench"
+path = "src/main.rs"
+
+[dependencies]
+spellman-detector = { path = "../crates/spellman-detector" }
+spellman-language = { path = "../crates/spellman-language" }
+whichlang = "0.1"
+lingua = { version = "1.8", default-features = false, features = [
+    "russian", "ukrainian", "belarusian", "bulgarian", "macedonian", "serbian",
+    "kazakh", "mongolian", "english", "spanish", "french", "portuguese",
+    "german", "chinese", "japanese", "hindi", "arabic",
+] }
+clap = { version = "4", features = ["derive"] }
