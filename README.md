@@ -153,44 +153,43 @@ details in the [training guide](docs/training.md).
 
 ## Quick start
 
-The detector depends on [svod] by path: clone it inside the repo root
-before the first build (`git clone https://github.com/npatsakula/svod`
-→ `./svod`). The trained model lives on Hugging Face and is fetched
-automatically — no manual download step.
+Build (the detector depends on [svod] by path — clone it inside the repo
+root first: `git clone https://github.com/npatsakula/svod` → `./svod`):
 
 ```bash
-git clone https://github.com/npatsakula/svod   # → ./svod
 cargo build --release -p spellman-cli
-
-# stdin in, ISO 639-3 out. --model hf:<repo>[/variant] pulls the model
-# through the HF cache on first use (root = f16; int8-col, fp8-col, … =
-# quantized variants). A plain path also works (default: ./model).
-echo "Съешь ещё этих мягких французских булок" | ./target/release/spellman detect --model hf:vpermilp/spellman
-printf 'Қазақша жазбалар\nThe quick brown fox\n' | ./target/release/spellman detect --model hf:vpermilp/spellman --lines
-printf 'Қазақша\n' | ./target/release/spellman detect --model hf:vpermilp/spellman/int8-col --json
-# {"confidence":0.99…,"lang":"kaz","name":"Kazakh","uncertain":false}
-
-./target/release/spellman eval --model hf:vpermilp/spellman train/tatoeba_eval.tsv  # accuracy + throughput
-./target/release/spellman bench --single               # probes + timings
 ```
 
-In code (the language inventory is re-exported by the detector — always
-use `spellman_detector::Lang` rather than a separate
-`spellman-language` dependency):
+Create the model from code — it comes from the Hugging Face Hub through
+the standard HF cache (first call downloads, later calls replay it), the
+same `from_hub` wiring svod's own models use:
 
 ```rust
-use spellman_detector::{BulkDetector, Lang, SingleDetector};
+use spellman_detector::{BulkDetector, SingleDetector};
 
-// From a local model directory — one document at a time, B=1 baked into
-// the plan (static kernels).
-let mut single = SingleDetector::load("model".as_ref(), 1024)?;
+// One document at a time — B=1 is baked into the plan (static kernels).
+let mut single = SingleDetector::from_hub(1024)?;
 let d = single.detect("Съешь ещё этих мягких французских булок")?;
 
-// Or straight from the Hugging Face Hub (svod-style from_hub: first call
-// downloads into the HF cache, later calls replay it; variants select a
-// storage format — int8-col is 3.9MB instead of 7.9MB, same accuracy).
+// Bulk batches — constant K, rebindable batch, rayon featurization written
+// zero-copy straight into the plan's input buffer. from_hub_variant picks
+// a storage format: int8-col is 3.9MB instead of 7.9MB f16, same accuracy.
 let mut bulk = BulkDetector::from_hub_variant("int8-col", 1024, 512)?;
 let results = bulk.detect_batch(&["Привет", "Hello"])?;
+```
+
+The language inventory is re-exported by the detector — always use
+`spellman_detector::Lang` rather than a separate `spellman-language`
+dependency. A local model directory works too: `SingleDetector::load`
+/ `BulkDetector::load` with any path.
+
+The CLI does the same via `--model hf:<owner>/<repo>[/variant]`
+(a plain path also works; default `./model`):
+
+```bash
+echo "Съешь ещё этих мягких французских булок" | ./target/release/spellman detect --model hf:vpermilp/spellman
+./target/release/spellman eval --model hf:vpermilp/spellman train/tatoeba_eval.tsv  # accuracy + throughput
+./target/release/spellman bench --single                                           # probes + timings
 ```
 
 Device selection follows svod's convention — weights land on the default
