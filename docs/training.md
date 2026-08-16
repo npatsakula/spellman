@@ -193,8 +193,16 @@ Details that matter:
   runtime flags detections below it as uncertain.
 - **Hash A/B:** rerun with different `--hash-id` and compare val
   accuracy; `--hash-stats` prints the distinct-key chi²/dof.
-- Export writes `model.json` + `model.safetensors` (f16 `P`/`bias`,
-  reference `E`/`W`) plus `eval_test.tsv`/`eval_val.tsv` for `assess`.
+- Export writes `model.json` + `model.safetensors` plus
+  `eval_test.tsv`/`eval_val.tsv` for `assess`. `--store
+  {f16,int8-row,int8-col,fp8-row,fp8-col}` picks the folded-table storage
+  format: int8/fp8 add a `scales` tensor and a `quant` block in
+  `model.json`, roughly halving the artifact. Every quantized store is
+  gated at export against validation accuracy (`--quant-max-drop`,
+  default 0.2pp) — the loader dequantizes, so the runtime graph never
+  sees the difference. `uv run python quantize_eval.py --store int8-row
+  --out /tmp/mi` rewrites an existing model into any format for offline
+  comparison.
 
 ## Evaluation
 

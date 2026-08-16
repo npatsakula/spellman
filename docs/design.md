@@ -198,7 +198,8 @@ the row block and the runtime graph needs no multiplies.
   "hash": "fmix32",
   "seed": 2654435769,
   "n_min": 1, "n_max": 5,
-  "theta": 0.8331743478775024
+  "theta": 0.8331743478775024,
+  "quant": {"dtype": "int8", "scheme": "column"}
 }
 ```
 
@@ -208,6 +209,19 @@ rejects anything else at load time, so a stale model can't be silently
 scored with the wrong tokenizer. `theta` is the calibrated confidence
 threshold (5th percentile of validation confidence): below it,
 `Detection::is_uncertain` is set.
+
+**Storage precision is decoupled from compute.** `quant` declares how `P`
+is stored — `float16` (no scales), or `int8`/`fp8e4m3` with a f32
+`scales` tensor per bucket row or per language column. The loader
+dequantizes into the canonical table (`resolve_table` is the single place
+that knows schemes), so the runtime graph and every tool are unchanged;
+`spellman-train --store` gates each scheme against validation accuracy at
+export. Measured on the shipped model: int8 and fp8 both land within
+±0.02pp on both referees while roughly halving the artifact (3.9–4.5MB
+vs 7.9MB). True int8 *compute* was prototyped and rejected on evidence:
+the i8→i16→i32 cast chain that svod's type lattice forces defeats the
+beam scheduler's fusion — with `BEAM=2` the int8 graph is 18% slower
+than f16 at K=1024 (`examples/int8_bench.rs` measures the split).
 
 ## Runtime
 
@@ -265,6 +279,7 @@ Measured decisions, in the order they pay off:
 | algebraic fold P = E·W | scoring = lookup + add, no matmul (whichlang-class throughput) |
 | zero-init embeddings | untrained buckets → exactly-zero logits (fixed `"sweatshirt"` → bul 1.0) |
 | sentinel canonicalization | wild referee 72.49% → 92.35%; ~30 neutral n-grams vs ~125 per URL |
+| precision-decoupled storage (int8/fp8 `P` + scales) | −50% artifact at ±0.02pp; int8 *compute* rejected: cast chain defeats BEAM=2 fusion (+18% at K=1024) |
 | hand word classifier | 29 ns/word vs 67 ns (DFA) / 83 ns (PikeVM) |
 | high-bit buckets + fmix32 | chi²/dof 1.006 at D = 2^17; XXH3 rejected |
 | constant-K JIT plan | ~5.3 µs/sample bulk; BEAM=2 adds 5.8× on the B=1 graph |

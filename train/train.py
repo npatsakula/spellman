@@ -34,6 +34,7 @@ from spellman_features import (
     bucket_tokens_flat,
     token_keys,
 )
+from quantize import dequantize, parse_store, quantize, stats
 
 
 LANG_TO_IDX = {code: i for i, code in enumerate(LANGUAGES)}
@@ -167,7 +168,21 @@ def chi_square_stats(train_rows: list[dict], cfg: Config) -> float:
     return chi2 / dof
 
 
-def export(model: SpellmanNet, cfg: Config, theta: float, out_dir: Path) -> None:
+def table_accuracy(p: np.ndarray, bias: np.ndarray, tensors: tuple, batch: int = 2048) -> float:
+    """Accuracy of the folded-table scorer on featurized tensors — the exact
+    computation the runtime performs (gather ±rows, mean over tokens, +bias).
+    Used to gate quantized storage formats against the f16 fold."""
+    idx, sign, mask, y = tensors
+    correct = 0
+    for start in range(0, len(y), batch):
+        sl = slice(start, start + batch)
+        n = np.maximum(mask[sl].sum(1, keepdims=True), 1.0)
+        logits = (p[idx[sl]] * sign[sl][..., None]).sum(1) / n + bias
+        correct += int((logits.argmax(1) == y[sl]).sum())
+    return correct / len(y)
+
+
+def export(model: SpellmanNet, cfg: Config, theta: float, out_dir: Path, store: str, max_drop: float, val_t: tuple) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     emb = model.emb.weight.detach().numpy()  # [D+1, dim]
     w = model.head.weight.detach().numpy()  # [C, dim]
@@ -179,16 +194,28 @@ def export(model: SpellmanNet, cfg: Config, theta: float, out_dir: Path) -> None
     p16 = (emb @ w.T).astype(np.float16)  # [D+1, C]
     p16[-1, :] = 0  # keep the padding row exactly zero after rounding
 
-    # Ship only what the runtime loads (P + bias): 8 MB instead of 41 MB at
-    # D = 2^17. The unfused E/W are training-side state — the loader never
-    # reads them.
-    save_file(
-        {
-            "P": p16,
-            "bias": b.astype(np.float16),
-        },
-        str(out_dir / "model.safetensors"),
-    )
+    # Storage precision is decoupled from compute: the loader dequantizes
+    # any format back into the same table. The gate below refuses to ship a
+    # scheme that costs more than --quant-max-drop validation accuracy.
+    dtype, scheme = parse_store(store)
+    stored, scales = (p16, None) if dtype == "float16" else quantize(p16, dtype, scheme)
+    if dtype != "float16":
+        base_acc = table_accuracy(p16.astype(np.float32), b, val_t)
+        deq = dequantize(stored, scales, dtype, scheme)
+        deq[-1, :] = 0
+        quant_acc = table_accuracy(deq, b, val_t)
+        drop_pp = 100.0 * (base_acc - quant_acc)
+        print(f"quantization gate ({store}): val acc {base_acc:.4f} -> {quant_acc:.4f} ({drop_pp:+.2f}pp)")
+        print("  " + stats(p16, stored, scales, dtype, scheme))
+        if drop_pp > max_drop:
+            raise SystemExit(
+                f"quantization drop {drop_pp:+.2f}pp exceeds --quant-max-drop {max_drop:.2f}pp; pick another --store"
+            )
+
+    tensors_out = {"P": stored, "bias": b.astype(np.float16)}
+    if scales is not None:
+        tensors_out["scales"] = scales
+    save_file(tensors_out, str(out_dir / "model.safetensors"))
     meta = {
         "format": "spellman-model",
         "version": 2,
@@ -200,9 +227,10 @@ def export(model: SpellmanNet, cfg: Config, theta: float, out_dir: Path) -> None
         "n_min": 1,
         "n_max": 5,
         "theta": theta,
+        "quant": {"dtype": dtype, "scheme": scheme},
     }
     (out_dir / "model.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
-    print(f"exported model to {out_dir} (theta={theta:.3f})")
+    print(f"exported model to {out_dir} (theta={theta:.3f}, store={store})")
 
 
 def write_eval_tsv(rows: list[dict], path: Path) -> None:
@@ -227,6 +255,19 @@ def main() -> None:
     parser.add_argument("--per-lang-cap", type=int, default=50_000)
     parser.add_argument("--hash-stats", action="store_true")
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--store",
+        default="f16",
+        choices=["f16", "int8-row", "int8-col", "fp8-row", "fp8-col"],
+        help="folded-table storage format (int8/fp8 halve the artifact; the "
+        "loader dequantizes, the runtime graph is unchanged)",
+    )
+    parser.add_argument(
+        "--quant-max-drop",
+        type=float,
+        default=0.2,
+        help="max tolerated validation-accuracy drop (percentage points) for quantized --store",
+    )
     args = parser.parse_args()
 
     cfg = Config(
@@ -286,7 +327,7 @@ def main() -> None:
     _, val_confs = evaluate(model, val_t, cfg.batch_size)
     theta = float(np.percentile(val_confs, 5))
 
-    export(model, cfg, theta, args.out)
+    export(model, cfg, theta, args.out, args.store, args.quant_max_drop, val_t)
     write_eval_tsv(test_rows, args.out / "eval_test.tsv")
     write_eval_tsv(val_rows, args.out / "eval_val.tsv")
     print("wrote eval_test.tsv / eval_val.tsv (feed to `cargo run --release --bin assess`)")

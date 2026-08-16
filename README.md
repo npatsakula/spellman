@@ -209,7 +209,9 @@ f16 export, canonicalizing feature space v2: model.json carries
 `"version": 2, "canonicalize": true` and the runtime rejects
 incompatible models at load) — is published at
 [vpermilp/spellman](https://huggingface.co/vpermilp/spellman); it is not
-tracked in this repo.
+tracked in this repo. Storage is precision-decoupled: `P` may ship as
+f16, int8 or fp8 behind a `quant` spec (int8 and fp8 measured lossless
+at ±0.02pp, half the artifact — see the [design doc](docs/design.md)).
 
 Not yet done: hard negatives at ~10× scale (rus-attraction on short
 texts is the top residual error), wild referees for more languages

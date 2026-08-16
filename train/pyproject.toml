@@ -12,6 +12,7 @@ dependencies = [
     "tqdm>=4.66",
     "polars>=1.43.2",
     "fasttext-numpy2>=0.10.4",
+    "ml-dtypes>=0.2",
 ]
 
 [project.scripts]

@@ -39,19 +39,19 @@ pub struct SpellmanModel {
 }
 
 impl SpellmanModel {
-    /// Build from a preloaded state dict, following svod's own loading style:
-    /// weights are cast to fp16 and never leave the device they were loaded
-    /// onto (the default device at `load_safetensors_dir` time). The doubled
-    /// ±P table is computed on-device via `cat`, so it is fused into the JIT
-    /// plan's constant realization instead of staging through host memory.
-    pub fn from_state_dict(sd: &svod_model::state::StateDict) -> Result<SpellmanModel, svod_tensor::error::Error> {
-        let sd = svod_model::state::cast_all(sd, svod_dtype::DType::Float16);
-        let p = svod_model::state::get_tensor(&sd, "P").map_err(|e| {
-            svod_tensor::error::Error::IrConstruction { details: format!("missing weight P: {e}") }
-        })?;
+    /// Build from the canonical (dequantized) host table `[D+1, NUM_LANGS]`
+    /// f32 — the single representation the loader resolves from any storage
+    /// precision. The f16 cast and the ±P doubling (`cat`) stay in the
+    /// graph, so the doubled table is fused into the JIT plan's constant
+    /// realization instead of staging through host memory twice.
+    pub fn from_table(table: &[f32], num_langs: usize) -> Result<SpellmanModel, svod_tensor::error::Error> {
+        let rows = table.len() / num_langs;
+        let p = Tensor::from_slice(table)
+            .try_reshape(&[rows as isize, num_langs as isize])?
+            .cast(svod_dtype::DType::Float16)?;
         let neg = p.try_neg()?;
-        let table = Tensor::cat(&[&p, &neg], 0)?;
-        Ok(SpellmanModel { table })
+        let jit_table = Tensor::cat(&[&p, &neg], 0)?;
+        Ok(SpellmanModel { table: jit_table })
     }
 
     /// Build the gather-sum graph over a `[b, K]` bucket-index batch.
@@ -146,7 +146,7 @@ impl BulkDetector {
         let metadata = crate::model::read_metadata(dir)?;
         let sd = svod_model::state::load_safetensors_dir(dir)?;
         let model = Model::from_state_dict(&sd, metadata)?;
-        let inner = SpellmanModel::from_state_dict(&sd)?;
+        let inner = SpellmanModel::from_table(&model.table, NUM_LANGS)?;
         let mut jit = SpellmanJit::new(inner);
         jit.prepare(InputSpec::i32(&[max_batch, k]))?;
         Ok(BulkDetector { jit, model, k, max_batch })
@@ -248,7 +248,7 @@ impl BulkDetector {
 /// this is the only dtype conversion on the runtime path (once per output
 /// element, after execution).
 #[inline]
-fn f16_to_f32(bits: u16) -> f32 {
+pub fn f16_to_f32(bits: u16) -> f32 {
     let sign = u32::from(bits >> 15) << 31;
     let exp = u32::from((bits >> 10) & 0x1F);
     let frac = u32::from(bits & 0x03FF);
@@ -317,7 +317,7 @@ impl SingleDetector {
         let metadata = crate::model::read_metadata(dir)?;
         let sd = svod_model::state::load_safetensors_dir(dir)?;
         let model = Model::from_state_dict(&sd, metadata)?;
-        let inner = SpellmanModel::from_state_dict(&sd)?;
+        let inner = SpellmanModel::from_table(&model.table, NUM_LANGS)?;
         let mut jit = SpellmanJit::new(inner).with_b_fixed(1);
         jit.prepare(InputSpec::i32(&[1, k]))?;
         Ok(SingleDetector { jit, model, k })
