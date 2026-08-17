@@ -111,6 +111,16 @@ Twitter-self-labeled `lang=uk` rows with a Cyrillic gate. These 24 specs yield
 ~3.5M wild/UGC rows; append them to the standing 15:15 recipe's source list for
 the next full mix (hygiene + hard negatives + retrain still apply).
 
+Blocked on the HF gate (manual approval — `gated: manual`, still 403 for the
+vpermilp token as of 2026-08-17): add this spec once the BashkirNLPWorld owners
+approve access:
+
+    --source 'hf:repo=BashkirNLPWorld/bashkir-web-corpus,lang=bak,docs=0,per_doc=4'
+
+(71,567 document-level web docs, CC BY-SA 4.0 — windowed sampling like
+FineWeb-2, not raw mode; ungated bak volume meanwhile: `slone/bak_rus_3M2023_scored`
+and `AigizK/bashkir-russian-parallel-corpora`, both parquet with a `ba` column.)
+
 ## Fetch + validation results (2026-08-17)
 
 All slugs under `train/cache/raw/<slug>/`, each with VALIDATION.md (full stats + samples).
