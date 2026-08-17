@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 import zlib
 from pathlib import Path
 
@@ -219,7 +220,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Import adapters for their registration side effects.
-    from sources import fineweb2, hf, leipzig, local, opus, tatoeba  # noqa: F401,E401
+    from sources import fineweb2, hf, leipzig, local, opus, tatoeba, ugc  # noqa: F401,E401
 
     if args.list:
         for name in registered():

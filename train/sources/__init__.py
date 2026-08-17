@@ -106,6 +106,23 @@ def parse_source(spec: str) -> tuple[str, dict[str, object]]:
     return name.strip(), opts
 
 
+def cyrillic_ratio(text: str) -> float:
+    """Share of a text's Unicode letters that are Cyrillic.
+
+    The script gate for mixed-script corpora (modern Uzbek web data is ~half
+    Latin; Serbian UGC is Latin-dominant): keep rows whose letters are
+    predominantly Cyrillic. Texts with no letters at all score 0.0.
+    """
+    letters = 0
+    cyr = 0
+    for ch in text:
+        if ch.isalpha():
+            letters += 1
+            if "\u0400" <= ch <= "\u04FF":
+                cyr += 1
+    return cyr / letters if letters else 0.0
+
+
 def _fingerprint(ds: Dataset) -> dict:
     """Option values normalized to JSON-comparable primitives (Path -> str)."""
     if not is_dataclass(ds):

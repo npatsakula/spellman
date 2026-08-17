@@ -86,12 +86,21 @@ need new code at all — the generic `hf` adapter is the escape hatch.
 | source | options | normalizes by |
 |---|---|---|
 | `fineweb2` | `docs_per_lang`, `per_doc` | streams per-language FineWeb-2 configs, extracts **line-windows**: 1–5-line windows of ~20–200 chars + truncated prefixes — the training distribution matches short inference text, not whole documents. `mon` = `khk_Cyrl`; `eng` from FineWeb `sample-10BT` |
-| `hf` | `repo`, `lang`, `config`, `column`, `docs`, `per_doc`, `streaming`, `seed` | any HF repo/config with a text column; same line-window sampling; one language per instance; `streaming=False` for small non-parquet repos whose auto-conversion streams slowly |
+| `hf` | `repo`, `lang`, `config`, `column`, `docs`, `per_doc`, `streaming`, `seed`, `raw`, `min_chars`, `max_chars`, `where`, `files`, `cyr`, `drop_cjk` | any HF repo/config with a text column; line-window sampling by default. **Raw mode** (`raw=True`) yields each row as one already-short sample (tweet/post register) with row gates: `where=col=value` equality slice, `cyr=<ratio>` Cyrillic-letter gate (mixed-script corpora), `drop_cjk=True` (mojibake), `files=<glob>` repo-relative subset (one split/shard) without a named config. `docs` caps scanned rows (0 = all) |
 | `tatoeba` | `train_per_lang` | training remainder of the Tatoeba dump; the frozen eval set (`tatoeba_eval.tsv`) is excluded verbatim and never rewritten; `srp`/`uzn` script-filtered to majority-Cyrillic |
-| `leipzig` | `corpus`, `lang`, `limit`, `min_chars` | Leipzig/wortschatz tarballs (e.g. the CURL community crawls for under-resourced languages); sentences as-is |
+| `leipzig` | `corpus`, `lang`, `limit`, `min_chars`, `cyr` | Leipzig/wortschatz tarballs (e.g. the CURL community crawls for under-resourced languages); sentences as-is; `cyr` = optional Cyrillic-letter gate for mixed-script releases |
 | `opus` | `corpus`, `src`, `tgt`, `lang`, `limit`, `min_chars` | OPUS moses bitexts, latest version via the OPUS API; yields one aligned side |
 | `csv` | `path`, `column`, `lang`, `min_chars` | local CSV/TSV, one text column, single language |
 | `jsonl` | `path`, `min_chars` | pre-labeled `{"lang","text"}` rows — the output side of offline tools (hard negatives, hygiene exports) |
+| `ukr_tweets` | `lang`, `limit`, `min_chars`, `cyr` | saganoren/ukr-twi-corpus, 1.85M raw tweets; Twitter's `lang=="uk"` self-label + Cyrillic gate; proper CSV parsing (tweets embed newlines) |
+| `mn_social` | `lang`, `limit`, `min_chars` | ganaxy/diploma — 10k raw Mongolian news/FB/YouTube comments (`text_raw`) |
+| `kazsandra` | `lang`, `limit`, `min_chars`, `cyr` | IS2AI/KazSAnDRA Kazakh reviews; only the canonical ib/valid/test zips, deduped on `custom_id` (the resampled `*_ros`/`*_rus` zips duplicate rows) |
+
+The wild-UGC adapters and the `hf` raw-mode gates exist for the
+social-media lane (the rusentitweet analogs); the researched candidate
+list with licenses, access commands and per-dataset validation reports
+lives in `train/WILD_UGC_CANDIDATES.md` and
+`train/cache/raw/<slug>/VALIDATION.md`.
 
 Shared normalization conventions: whitespace-flattened single-line
 samples, `min_chars = 20`, and per-language caps applied at the source
