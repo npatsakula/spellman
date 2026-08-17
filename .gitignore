@@ -23,3 +23,4 @@ __pycache__/
 # by train/spellman-train — never tracked
 /model/
 /model-*/
+data_mix2/*.jsonl

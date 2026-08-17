@@ -80,36 +80,43 @@ uv run spellman-mix --out <mix_dir> \
   --source ukr_tweets:limit=400000 \
   --source mn_social \
   --source kazsandra \
-  --source 'hf:repo=alexantonov/chuvash_mono,column=chv,lang=chv,raw=True,docs=500000' \
-  --source 'hf:repo=alexantonov/chuvash_russian_parallel,column=chv,lang=chv,raw=True,docs=300000' \
-  --source 'hf:repo=tahrirchi/uz-crawl,files=data/telegram_blogs*,lang=uzn,raw=True,cyr=0.6,docs=400000' \
+  --source 'hf:repo=alexantonov/chuvash_mono,column=chv,lang=chv,raw=True,docs=500000,max_chars=512' \
+  --source 'hf:repo=alexantonov/chuvash_russian_parallel,column=chv,lang=chv,raw=True,docs=300000,max_chars=512' \
+  --source 'hf:repo=tahrirchi/uz-crawl,files=data/telegram_blogs*,lang=uzn,raw=True,cyr=0.6,docs=400000,max_chars=512' \
   --source 'leipzig:corpus=kir_community_2017,lang=kir,limit=250000' \
   --source 'leipzig:corpus=tgk_community_2022,lang=tgk,cyr=0.6,limit=500000' \
   --source 'leipzig:corpus=uzb_community_2017,lang=uzn,cyr=0.6,limit=400000' \
-  --source 'hf:repo=averoo/sakha-oscar,lang=sah,raw=True,docs=0,streaming=False' \
-  --source 'hf:repo=allenai/MADLAD-400,files=data/tyv/tyv_clean_0000.jsonl.gz,lang=tyv,raw=True,docs=0,streaming=False' \
-  --source 'hf:repo=allenai/MADLAD-400,files=data/sah/sah_clean_0000.jsonl.gz,lang=sah,raw=True,docs=0,streaming=False' \
-  --source 'hf:repo=YShynkarov/COSMUS,column=document_content,where=language_manual=ukrainian,lang=ukr,raw=True,docs=0,streaming=False' \
+  --source 'hf:repo=averoo/sakha-oscar,lang=sah,raw=True,docs=0,streaming=False,max_chars=512' \
+  --source 'hf:repo=allenai/MADLAD-400,files=data/tyv/tyv_clean_0000.jsonl.gz,lang=tyv,raw=True,docs=0,streaming=False,max_chars=512' \
+  --source 'hf:repo=allenai/MADLAD-400,files=data/sah/sah_clean_0000.jsonl.gz,lang=sah,raw=True,docs=0,streaming=False,max_chars=512' \
+  --source 'hf:repo=YShynkarov/COSMUS,column=document_content,where=language_manual=ukrainian,lang=ukr,raw=True,docs=0,streaming=False,max_chars=512' \
   --source 'hf:repo=maaxap/BelarusianGLUE,config=besls,column=sentence,lang=bel,raw=True,docs=0,streaming=False' \
+  --source 'hf:repo=DGurgurov/macedonian_sa,column=text,lang=mkd,raw=True,docs=0,streaming=False,max_chars=512' \
+  --source 'hf:repo=DGurgurov/bulgarian_sa,column=text,lang=bul,raw=True,docs=0,streaming=False,max_chars=512' \
   --source 'hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/english/train.jsonl,lang=eng,raw=True,docs=0,streaming=False' \
   --source 'hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/french/train.jsonl,lang=fra,raw=True,docs=0,streaming=False' \
   --source 'hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/german/train.jsonl,lang=deu,raw=True,docs=0,streaming=False' \
   --source 'hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/portuguese/train.jsonl,lang=por,raw=True,docs=0,streaming=False' \
   --source 'hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/spanish/train.jsonl,lang=spa,raw=True,docs=0,streaming=False' \
-  --source 'hf:repo=contemmcm/sentiment140,column=text,lang=eng,raw=True,split=complete,docs=400000' \
-  --source 'hf:repo=FrancophonIA/french_tweets,lang=fra,raw=True,docs=0,streaming=False' \
-  --source 'hf:repo=fpaulino/portuguese-tweets,column=tweet_text,lang=por,raw=True,docs=120000' \
-  --source 'hf:repo=mteb/told-br,lang=por,raw=True,drop_cjk=True,docs=0,streaming=False' \
-  --source 'hf:repo=NLP-UniBW/tweets_about_german_politicians_jan_feb_2025,where=language=de,lang=deu,raw=True,docs=0' \
-  --source 'hf:repo=pysentimiento/spanish-tweets,files=data/train-00000-of-00166-*.parquet,lang=spa,raw=True,docs=400000'
+  --source 'hf:repo=contemmcm/sentiment140,column=text,lang=eng,raw=True,split=complete,docs=400000,max_chars=512' \
+  --source 'hf:repo=FrancophonIA/french_tweets,lang=fra,raw=True,docs=0,streaming=False,max_chars=512' \
+  --source 'hf:repo=fpaulino/portuguese-tweets,column=tweet_text,lang=por,raw=True,docs=120000,max_chars=512' \
+  --source 'hf:repo=mteb/told-br,lang=por,raw=True,drop_cjk=True,docs=0,streaming=False,max_chars=512' \
+  --source 'hf:repo=NLP-UniBW/tweets_about_german_politicians_jan_feb_2025,where=language=de,lang=deu,raw=True,docs=0,max_chars=512' \
+  --source 'hf:repo=pysentimiento/spanish-tweets,files=data/train-00000-of-00166-*.parquet,lang=spa,raw=True,docs=400000,max_chars=512'
 ```
 
 Gotchas baked into these specs: umsab is a legacy script repo (read via `files=` +
 builder, bypassing the script); sentiment140's single split is `complete`;
 kazsandra dedups `custom_id` over the canonical zips only; ukr_tweets keeps only
-Twitter-self-labeled `lang=uk` rows with a Cyrillic gate. These 24 specs yield
-~3.5M wild/UGC rows; append them to the standing 15:15 recipe's source list for
-the next full mix (hygiene + hard negatives + retrain still apply).
+Twitter-self-labeled `lang=uk` rows with a Cyrillic gate. **`max_chars=512` is
+not optional on raw doc-bearing sources** — OSCAR/MADLAD rows reach 190k chars,
+and unclamped they blow up downstream vectorized passes (the hygiene judge
+materializes `[tokens × classes]` per chunk). DGurgurov macedonian_sa/bulgarian_sa
+(MIT) replace the NC-licensed mteb Macedonian tweets of the old recipe. These 26
+specs yield ~3.5M wild/UGC rows; the combined v4 recipe (standing 15:15 sources +
+these, minus the NC mteb mkd source and the subsumed windowed chuvash_mono) lives
+in `data_mix2/manifest.json` after the first run.
 
 Blocked on the HF gate (manual approval — `gated: manual`, still 403 for the
 vpermilp token as of 2026-08-17): add this spec once the BashkirNLPWorld owners

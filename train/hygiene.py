@@ -72,14 +72,19 @@ def load_judge(model_dir: Path):
     return P, bias, meta["log2_d"], meta["seed"], meta["hash"]
 
 
-def predict_batch(texts: list[str], P, bias, log2_d, seed, hash_id, chunk: int = 10_000) -> list[tuple[int, float]]:
+def predict_batch(texts: list[str], P, bias, log2_d, seed, hash_id, chunk: int = 4_000) -> list[tuple[int, float]]:
     """Vectorized judge: batch featurize (bit-exact) + folded-table scoring.
 
     Chunked to bound memory: the token gather is [tokens, C] floats, so a
-    whole 360k-row cache at once would allocate many GB."""
+    whole 360k-row cache at once would allocate many GB. Raw-mode caches
+    can hold whole documents (OSCAR/MADLAD rows reach 190k chars), so each
+    chunk is also truncated to JUDGE_CHARS — a language verdict needs the
+    head of the text, not all 90k of its tokens."""
+    JUDGE_CHARS = 1_200
     out: list[tuple[int, float]] = []
     for t0 in range(0, len(texts), chunk):
-        out.extend(_predict_chunk(texts[t0 : t0 + chunk], P, bias, log2_d, seed, hash_id))
+        part = [t[:JUDGE_CHARS] for t in texts[t0 : t0 + chunk]]
+        out.extend(_predict_chunk(part, P, bias, log2_d, seed, hash_id))
     return out
 
 

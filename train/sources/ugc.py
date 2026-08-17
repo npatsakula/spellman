@@ -42,14 +42,17 @@ KAZSANDRA_ZIPS = [
 class UkrTweets(Dataset):
     """saganoren/ukr-twi-corpus: 1.85M raw Ukrainian tweets (2018-19).
 
-    Pre-filtered to Twitter's own ``lang == "uk"`` self-label (84% of rows)
-    plus a Cyrillic-ratio gate — the corpus still carries a real surzhyk/
-    Russian tail, which the pipeline's LID hygiene is for. The CSV embeds
-    newlines inside quoted tweets, so it must be parsed with a real CSV
-    reader (pandas), never line-split.
+    Pre-filtered to Twitter's own ``lang`` self-label (84% ``uk``) plus a
+    Cyrillic-ratio gate — the corpus still carries a real surzhyk/Russian
+    tail, which the pipeline's LID hygiene is for. The CSV embeds newlines
+    inside quoted tweets, so it must be parsed with a real CSV reader
+    (pandas), never line-split. The crawl's Russian tail is a first-class
+    source too: ``lang=rus,twitter_lang=ru`` yields ~131k same-register
+    Russian tweets.
     """
 
     lang: str = "ukr"
+    twitter_lang: str = "uk"
     limit: int = 400_000
     min_chars: int = 20
     cyr: float = 0.5
@@ -76,7 +79,7 @@ class UkrTweets(Dataset):
         n = 0
         for chunk in pd.read_csv(csv, usecols=["text", "lang"], chunksize=200_000):
             for t, l in zip(chunk["text"].tolist(), chunk["lang"].tolist()):
-                if l != "uk" or not isinstance(t, str):
+                if l != self.twitter_lang or not isinstance(t, str):
                     continue
                 t = " ".join(t.split())
                 if len(t) < self.min_chars or cyrillic_ratio(t) < self.cyr:
