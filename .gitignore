@@ -25,3 +25,4 @@ __pycache__/
 /model-*/
 data_mix2/*.jsonl
 data_mix3/*.jsonl
+data_mix4/*.jsonl

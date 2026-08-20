@@ -1578,6 +1578,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pymorphy2-dicts-uk"
+version = "2.4.1.1.1460299261"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a6/83/e479b0fc9a2f36a21a0fdc330caf8737c6749a23e3ada3558f46d53cdece/pymorphy2-dicts-uk-2.4.1.1.1460299261.tar.gz", hash = "sha256:9ed9f5332d46a9d4c74ca418bc2cc7427ee7822dff2ca2c666ace186d47b2245", size = 4964731, upload-time = "2016-04-10T15:41:53.824Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/af/3ac5e9f1d9c31c934beeea852d3af743da561713b03470316f997a5938e1/pymorphy2_dicts_uk-2.4.1.1.1460299261-py2.py3-none-any.whl", hash = "sha256:b8f713eb32c704e97347361c20cfc1782731600ce187fe2d66fd427c71481d0e", size = 4987607, upload-time = "2016-04-10T15:42:19.852Z" },
+]
+
+[[package]]
 name = "pymorphy3"
 version = "2.0.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1736,6 +1745,7 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "polars" },
+    { name = "pymorphy2-dicts-uk" },
     { name = "pymorphy3" },
     { name = "safetensors" },
     { name = "torch" },
@@ -1750,6 +1760,7 @@ requires-dist = [
     { name = "ml-dtypes", specifier = ">=0.2" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "polars", specifier = ">=1.43.2" },
+    { name = "pymorphy2-dicts-uk", specifier = ">=2.4.1.1.1460299261" },
     { name = "pymorphy3", specifier = ">=2.0.6" },
     { name = "safetensors", specifier = ">=0.4" },
     { name = "torch", specifier = ">=2.4" },
