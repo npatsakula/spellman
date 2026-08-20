@@ -190,6 +190,32 @@ def read_source(ds: sources.Dataset) -> pl.DataFrame:
     )
 
 
+def cap_stratified(
+    rows: list[tuple[str, str]], cap: int, short_floor: float, seed: int
+) -> list[tuple[str, str]]:
+    """Cap with a guaranteed share of genuinely-short rows (<= 19 chars).
+
+    The short lane exists because fragments of long text cannot stand in
+    for real short utterances; without this, a dominant long source wins
+    the plain sample and the short rows vanish under --cap-per-lang.
+    Best effort: languages without enough short rows backfill with long
+    ones. short_floor = 0 reduces to the historical plain sample (same
+    RNG stream), so old mixes replay unchanged."""
+    if short_floor <= 0:
+        return random.Random(seed).sample(rows, cap)
+    short = [r for r in rows if len(r[1]) <= 19]
+    long_ = [r for r in rows if len(r[1]) > 19]
+    rng = random.Random(seed)
+    want_short = min(len(short), int(cap * short_floor))
+    want_long = cap - want_short
+    if want_long > len(long_):  # backfill from short
+        want_short += want_long - len(long_)
+        want_long = len(long_)
+    out = rng.sample(short, want_short) if want_short else []
+    out += rng.sample(long_, want_long) if want_long else []
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=Path(__file__).parent / "data_mix")
@@ -208,6 +234,14 @@ def main() -> None:
         default=0.0,
         help="probability per row of also emitting an internet-noised copy "
         "(URLs, mentions, emoji, casing chaos, elongation, loans) in the same split",
+    )
+    parser.add_argument(
+        "--short-floor",
+        type=float,
+        default=0.0,
+        help="when capping, guarantee at least this fraction of each "
+        "language's sample is genuinely-short rows (<=19 chars, the wild "
+        "short lane); languages without enough short rows backfill with long",
     )
     parser.add_argument(
         "--short-augment",
@@ -279,7 +313,7 @@ def main() -> None:
                 for row in (
                     by_lang[lang]
                     if len(by_lang[lang]) <= args.cap_per_lang
-                    else random.Random(args.seed).sample(by_lang[lang], args.cap_per_lang)
+                    else cap_stratified(by_lang[lang], args.cap_per_lang, args.short_floor, args.seed)
                 )
             ]
         rng.shuffle(rows)
@@ -299,6 +333,7 @@ def main() -> None:
         "cap_per_lang": args.cap_per_lang,
         "wild_augment": args.wild_augment,
         "short_augment": args.short_augment,
+        "short_floor": args.short_floor,
         "sources": [list(parse_source(spec)) for spec in args.source],
     }
     (args.out / "manifest.json").write_text(

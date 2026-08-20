@@ -100,11 +100,27 @@ def balance_train(rows: list[dict], cap: int, rng: np.random.Generator) -> list[
     return out
 
 
+class PooledHead(nn.Module):
+    """Mean-pool + linear head, isolated so torch.compile covers exactly
+    this subgraph: embedding inside the compiled region trips an unstable
+    inductor-on-MPS bug ("Tensor device mismatch" / "Placeholder storage
+    has not been allocated on MPS device"), while the gather itself is
+    memory-bound and gains little from compilation."""
+
+    def __init__(self, dim: int, n_classes: int):
+        super().__init__()
+        self.head = nn.Linear(dim, n_classes)
+
+    def forward(self, e: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        pooled = (e * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp(min=1.0)
+        return self.head(pooled)
+
+
 class SpellmanNet(nn.Module):
     def __init__(self, d_buckets: int, dim: int, n_classes: int):
         super().__init__()
         self.emb = nn.Embedding(d_buckets + 1, dim)  # +1: padding row D, zeroed at export
-        self.head = nn.Linear(dim, n_classes)
+        self.post = PooledHead(dim, n_classes)
         # Zero-init (fastText convention): untrained buckets must fold to
         # exactly-zero logits through P = E·W. With random init, rare-word
         # n-grams that land in never-updated buckets contribute arbitrary
@@ -112,10 +128,13 @@ class SpellmanNet(nn.Module):
         # bul 1.0 because its buckets were untrained noise.
         nn.init.zeros_(self.emb.weight)
 
+    @property
+    def head(self) -> nn.Linear:
+        return self.post.head
+
     def forward(self, idx: torch.Tensor, sign: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         emb = self.emb(idx) * sign.unsqueeze(-1)
-        pooled = (emb * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp(min=1.0)
-        return self.head(pooled)
+        return self.post(emb, mask)
 
 
 @torch.no_grad()
@@ -126,12 +145,13 @@ def evaluate(model: SpellmanNet, tensors: tuple, batch_size: int) -> tuple[float
     confs: list[np.ndarray] = []
     for start in range(0, len(y), batch_size):
         sl = slice(start, start + batch_size)
+        dev = next(model.parameters()).device
         logits = model(
-            torch.from_numpy(idx[sl]),
-            torch.from_numpy(sign[sl]),
-            torch.from_numpy(mask[sl]),
+            torch.from_numpy(idx[sl]).to(dev),
+            torch.from_numpy(sign[sl]).to(dev),
+            torch.from_numpy(mask[sl]).to(dev),
         )
-        probs = torch.softmax(logits, dim=-1).numpy()
+        probs = torch.softmax(logits, dim=-1).cpu().numpy()
         pred = probs.argmax(1)
         correct += int((pred == y[sl]).sum())
         confs.append(probs[np.arange(len(pred)), pred])
@@ -184,9 +204,9 @@ def table_accuracy(p: np.ndarray, bias: np.ndarray, tensors: tuple, batch: int =
 
 def export(model: SpellmanNet, cfg: Config, theta: float, out_dir: Path, store: str, max_drop: float, val_t: tuple) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    emb = model.emb.weight.detach().numpy()  # [D+1, dim]
-    w = model.head.weight.detach().numpy()  # [C, dim]
-    b = model.head.bias.detach().numpy()  # [C]
+    emb = model.emb.weight.detach().cpu().numpy()  # [D+1, dim]
+    w = model.head.weight.detach().cpu().numpy()  # [C, dim]
+    b = model.head.bias.detach().cpu().numpy()  # [C]
 
     # Train in f32, export in f16: the runtime paths are f16-native (ARM
     # NEON / GPU), the fold is rounded once here, and validation showed no
@@ -257,6 +277,13 @@ def main() -> None:
     parser.add_argument("--hash-stats", action="store_true")
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="torch.compile the net (measured on M1 Pro: 33.7 ms/step cpu -> "
+        "10.5 ms/step mps+compile, ~3.2x; warmup ~1s, two extra recompiles "
+        "for the partial eval batches)",
+    )
+    parser.add_argument(
         "--store",
         default="f16",
         choices=["f16", "int8-row", "int8-col", "fp8-row", "fp8-col"],
@@ -300,6 +327,9 @@ def main() -> None:
     device = torch.device(args.device)
     model = SpellmanNet(1 << cfg.log2_d, cfg.dim, len(LANGUAGES)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
+    raw = model  # eval/export use the uncompiled module
+    if args.compile:
+        model.post = torch.compile(model.post)
     n = len(train_t[3])
     for epoch in range(cfg.epochs):
         order = rng.permutation(n)
@@ -320,15 +350,15 @@ def main() -> None:
             frac = 1.0 - (epoch * n + min(start + cfg.batch_size, n)) / (cfg.epochs * n)
             for group in opt.param_groups:
                 group["lr"] = max(cfg.lr * frac, 1e-5)
-        val_acc, _ = evaluate(model, val_t, cfg.batch_size)
+        val_acc, _ = evaluate(raw, val_t, cfg.batch_size)
         print(f"epoch {epoch + 1}: loss {sum(losses) / len(losses):.4f}, val acc {val_acc:.4f}", flush=True)
 
     # θ calibration: 5th percentile of validation prediction confidence —
     # detections below θ are flagged uncertain by the runtime.
-    _, val_confs = evaluate(model, val_t, cfg.batch_size)
+    _, val_confs = evaluate(raw, val_t, cfg.batch_size)
     theta = float(np.percentile(val_confs, 5))
 
-    export(model, cfg, theta, args.out, args.store, args.quant_max_drop, val_t)
+    export(raw, cfg, theta, args.out, args.store, args.quant_max_drop, val_t)
     write_eval_tsv(test_rows, args.out / "eval_test.tsv")
     write_eval_tsv(val_rows, args.out / "eval_val.tsv")
     print("wrote eval_test.tsv / eval_val.tsv (feed to `cargo run --release --bin assess`)")

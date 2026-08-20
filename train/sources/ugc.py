@@ -55,6 +55,7 @@ class UkrTweets(Dataset):
     twitter_lang: str = "uk"
     limit: int = 400_000
     min_chars: int = 20
+    max_chars: int = 0
     cyr: float = 0.5
 
     name = "ukr_tweets"
@@ -82,7 +83,9 @@ class UkrTweets(Dataset):
                 if l != self.twitter_lang or not isinstance(t, str):
                     continue
                 t = " ".join(t.split())
-                if len(t) < self.min_chars or cyrillic_ratio(t) < self.cyr:
+                if len(t) < self.min_chars or (self.max_chars and len(t) > self.max_chars):
+                    continue
+                if cyrillic_ratio(t) < self.cyr:
                     continue
                 yield self.lang, t
                 n += 1
@@ -102,6 +105,7 @@ class MnSocial(Dataset):
     lang: str = "mon"
     limit: int = 999_999
     min_chars: int = 20
+    max_chars: int = 0
 
     name = "mn_social"
 
@@ -121,7 +125,7 @@ class MnSocial(Dataset):
             if not isinstance(t, str):
                 continue
             t = " ".join(t.split())
-            if len(t) < self.min_chars:
+            if len(t) < self.min_chars or (self.max_chars and len(t) > self.max_chars):
                 continue
             yield self.lang, t
             n += 1
@@ -143,6 +147,7 @@ class KazSandra(Dataset):
     lang: str = "kaz"
     limit: int = 999_999
     min_chars: int = 20
+    max_chars: int = 0
     cyr: float = 0.5
 
     name = "kazsandra"
@@ -172,7 +177,9 @@ class KazSandra(Dataset):
                     continue
                 seen_ids.add(cid)
                 t = " ".join(t.split())
-                if len(t) < self.min_chars or cyrillic_ratio(t) < self.cyr:
+                if len(t) < self.min_chars or (self.max_chars and len(t) > self.max_chars):
+                    continue
+                if cyrillic_ratio(t) < self.cyr:
                     continue
                 yield self.lang, t
                 n += 1
