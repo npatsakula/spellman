@@ -15,6 +15,7 @@ dependencies = [
     "ml-dtypes>=0.2",
     "pymorphy3>=2.0.6",
     "pymorphy2-dicts-uk>=2.4.1.1.1460299261",
+    "stanza>=1.14.0",
 ]
 
 [project.scripts]

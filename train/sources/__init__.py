@@ -145,6 +145,19 @@ def cache_paths(ds: Dataset, cache_dir: Path = CACHE_DIR) -> tuple[Path, Path, d
     return path, path.with_suffix(".options.json"), fingerprint
 
 
+def cache_is_warm(ds: Dataset, cache_dir: Path = CACHE_DIR) -> bool:
+    """True when the source's cache exists and its sidecar matches the
+    current options fingerprint (i.e. ``samples_cached`` would replay it
+    without rebuilding). Lets callers prebuild only the cold caches."""
+    path, meta_path, fingerprint = cache_paths(ds, cache_dir)
+    if not (path.exists() and meta_path.exists()):
+        return False
+    try:
+        return json.loads(meta_path.read_text()) == fingerprint
+    except json.JSONDecodeError:
+        return False
+
+
 class Dataset(ABC):
     """A training-data source: acquisition + conversion to (lang, text)."""
 

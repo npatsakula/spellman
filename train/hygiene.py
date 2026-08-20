@@ -130,6 +130,14 @@ def main() -> None:
         return args.only_lang is None or lang == args.only_lang
 
     for cache in args.caches:
+        # Training caches are {"lang","text"} rows; the diverse provider's
+        # materialized pools ({"text"}) and lemma sidecars ({"l"}) live in
+        # the same directory and must be skipped, not parsed.
+        with cache.open(encoding="utf-8") as probe:
+            first = probe.readline()
+        if '"lang"' not in first:
+            print(f"{cache.name}: not a training cache, skipped")
+            continue
         df = pl.read_ndjson(cache)
         rows = list(zip(df["lang"].to_list(), df["text"].to_list()))
         preds = predict_batch([t for _, t in rows], P, bias, log2_d, seed, hash_id)

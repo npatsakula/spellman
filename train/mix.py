@@ -216,6 +216,54 @@ def cap_stratified(
     return out
 
 
+def _prewarm_worker(spec: str) -> tuple[str, int]:
+    """Build one source's cache to completion (runs in a worker process).
+
+    Each spec's cache is content-addressed and independent, so cold
+    caches build concurrently without write races; the mixer then
+    replays them warm through its normal single-process path, keeping
+    dedup order and RNG streams byte-identical to a sequential build.
+    """
+    from sources import diverse, fineweb2, hf, leipzig, local, opus, tatoeba, ugc  # noqa: F401,E401,F403
+
+    name, opts = parse_source(spec)
+    ds = sources.create(name, **opts)
+    n = sum(1 for _ in ds.samples_cached())
+    return spec, n
+
+
+def prebuild_colds(specs: list[str], jobs: int) -> None:
+    """Build every cold cache in `specs` with a process pool.
+
+    Bounded by RAM, not cores: the big diverse pools hold ~1-3GB each
+    during normalize+select, so 3-4 jobs is the practical ceiling on a
+    16GB machine regardless of core count.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from sources import diverse, fineweb2, hf, leipzig, local, opus, tatoeba, ugc  # noqa: F401,E401,F403
+
+    cold: list[str] = []
+    for spec in specs:
+        name, opts = parse_source(spec)
+        if not sources.cache_is_warm(sources.create(name, **opts)):
+            cold.append(spec)
+    if not cold:
+        print("prebuild: all caches warm")
+        return
+    print(f"prebuild: {len(cold)}/{len(specs)} cold caches, {jobs} jobs", flush=True)
+    with ProcessPoolExecutor(max_workers=jobs) as ex:
+        futures = {ex.submit(_prewarm_worker, s): s for s in cold}
+        try:
+            for fut in as_completed(futures):
+                spec, n = fut.result()
+                print(f"prebuilt {spec}: {n:,} samples", flush=True)
+        except Exception:
+            for f in futures:
+                f.cancel()
+            raise
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=Path(__file__).parent / "data_mix")
@@ -250,6 +298,10 @@ def main() -> None:
         help="probability per row of also emitting a random 1-3-word fragment "
         "in the same split (short-text regime training)",
     )
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="build cold source caches in N parallel processes before mixing "
+                             "(warm caches are skipped; RAM-bound: 3-4 is the ceiling on 16GB "
+                             "because big diverse pools hold GBs each)")
     parser.add_argument("--list", action="store_true", help="list registered sources and exit")
     args = parser.parse_args()
 
@@ -262,6 +314,9 @@ def main() -> None:
         return
     if not args.source:
         raise SystemExit("no --source given (see --list)")
+
+    if args.jobs > 1:
+        prebuild_colds(args.source, args.jobs)
 
     # Ingest + cross-source dedup, first source wins. Deduplicating
     # incrementally keeps the per-source "-> N unique samples" counts and
