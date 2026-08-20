@@ -25,6 +25,7 @@ class LocalCsv(Dataset):
     column: str
     lang: str
     min_chars: int = 20
+    max_chars: int = 0
 
     name = "csv"
 
@@ -39,7 +40,7 @@ class LocalCsv(Dataset):
         with self.path.open(encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
                 text = " ".join((row.get(self.column) or "").split())
-                if len(text) >= self.min_chars:
+                if len(text) >= self.min_chars and not (self.max_chars and len(text) > self.max_chars):
                     yield self.lang, text
                     n += 1
         print(f"  csv/{self.path.name} [{self.column}] -> {self.lang}: {n} rows")

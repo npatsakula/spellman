@@ -151,6 +151,7 @@ def main() -> None:
 
         keep_mask: list[bool] = []
         dropped: Counter[str] = Counter()
+        audit: list[str] = []
         for i, ((lang, text), (top, conf)) in enumerate(zip(rows, preds)):
             wrong_lang = top >= 0 and LANGUAGES[top] != lang
             reason = None
@@ -162,9 +163,14 @@ def main() -> None:
             if reason:
                 dropped[reason] += 1
                 keep_mask.append(False)
+                audit.append(json.dumps(
+                    {"lang": lang, "text": text, "pred": reason, "conf": round(conf, 4)},
+                    ensure_ascii=False))
             else:
                 keep_mask.append(True)
         status = "would drop" if args.dry_run else "dropped"
+        audit_path = cache.with_suffix(cache.suffix + ".dropped")
+        audit_path.write_text("\n".join(audit) + ("\n" if audit else ""), encoding="utf-8")
         print(f"{cache.name}: {status} {len(rows) - sum(keep_mask)}/{len(rows)} -> {dict(dropped.most_common(8))}", flush=True)
         if not args.dry_run and not all(keep_mask):
             tmp = cache.with_suffix(".jsonl.tmp")

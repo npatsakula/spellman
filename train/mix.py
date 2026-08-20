@@ -254,7 +254,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Import adapters for their registration side effects.
-    from sources import fineweb2, hf, leipzig, local, opus, tatoeba, ugc  # noqa: F401,E401
+    from sources import diverse, fineweb2, hf, leipzig, local, opus, tatoeba, ugc  # noqa: F401,E401
 
     if args.list:
         for name in registered():
