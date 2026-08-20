@@ -260,10 +260,13 @@ texts, Latin-script Tatar short sentences, tgk data thinness.
 
 ### Replaying this mix
 
-Every `spellman-mix` run now records its exact recipe into
-`<out>/manifest.json`. The current model's recipe, reconstructed from
-the cache fingerprints (the Komi parallel corpus is deliberately absent
-— rejected by the contamination audit):
+Every `spellman-mix` run records its exact recipe into
+`<out>/manifest.json` — the current model's recipe is
+`train/data_mix2/manifest.json` (the standing FineWeb-2/Tatoeba/OPUS
+recipe below plus the wild-UGC sources of
+`train/WILD_UGC_CANDIDATES.md`). The pre-wild standing recipe,
+reconstructed from the cache fingerprints (the Komi parallel corpus is
+deliberately absent — rejected by the contamination audit):
 
 ```bash
 # prerequisites (once):
