@@ -31,6 +31,7 @@
 //! - a **word-unigram** key: FNV-1a-64 over the same lowercased (or
 //!   canonicalized-sentinel) codepoints that feed the packer;
 //! - a **word-bigram** key over adjacent retained words.
+//!
 //! Both are XORed with domain-separation salts ([`TAG_WORD`], [`TAG_BIGRAM`])
 //! extending the `N_TAG` scheme, then flow through the feature hasher like
 //! any other key. They are emitted interleaved — after each word's char
@@ -213,6 +214,13 @@ fn is_ascii_domain(s: &str) -> bool {
 /// Classify one word. Evaluation order matters and is part of the contract:
 /// mention → URL prefix → email → digit-bearing ASCII → bare domain → word.
 pub fn classify_word(word: &str) -> WordClass {
+    // Fast negative: a leading non-ASCII byte rules out every class — the
+    // mention marker and the URL prefixes are leading ASCII, and email
+    // locals, digit tokens and bare domains must be all-ASCII — so
+    // Cyrillic-initial words (the common case) classify without scanning.
+    if word.as_bytes().first().is_some_and(|&b| b >= 0x80) {
+        return WordClass::Word;
+    }
     if word.len() > 1 && word.starts_with('@') {
         return WordClass::Mention;
     }
@@ -222,14 +230,13 @@ pub fn classify_word(word: &str) -> WordClass {
     {
         return WordClass::Url;
     }
-    if let Some((local, domain)) = word.split_once('@') {
-        if !domain.contains('@')
-            && !local.is_empty()
-            && local.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'%' | b'+' | b'-'))
-            && is_ascii_domain(domain)
-        {
-            return WordClass::Email;
-        }
+    if let Some((local, domain)) = word.split_once('@')
+        && !domain.contains('@')
+        && !local.is_empty()
+        && local.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'%' | b'+' | b'-'))
+        && is_ascii_domain(domain)
+    {
+        return WordClass::Email;
     }
     if word.is_ascii() && word.bytes().any(|b| b.is_ascii_digit()) {
         return WordClass::Num;
@@ -288,14 +295,14 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
         *r = (*r << CP_BITS) | (c & CP_MASK);
         *len += 1;
         let upper = n_max.min(*len);
-        for n in cfg.n_min as usize..=upper {
+        for (n, tag) in N_TAG.iter().enumerate().take(upper + 1).skip(cfg.n_min as usize) {
             let window = match n {
                 1 => *r & M1,
                 2 => *r & M2,
                 3 => *r & M3,
                 _ => *r, // 4- and 5-gram windows wrap; window is the full register
             };
-            f(window ^ N_TAG[n]);
+            f(window ^ tag);
         }
     }
 
@@ -415,6 +422,76 @@ pub fn for_each_bucket<F: FnMut(u32, bool)>(
     });
 }
 
+/// Stream up to `k` signed bucket tokens of `text` directly into `dst` as
+/// signed table indices — `bucket`, or `D+1+bucket` for negative tokens (the
+/// ±P doubled-table gather layout the JIT plans consume) — returning the
+/// number written. Zero-allocation single pass over the text; the result is
+/// identical to iterating [`bucket_tokens`] and breaking at `k`, minus the
+/// token-vector materialization.
+pub fn fill_signed_indices(
+    text: &str,
+    cfg: &FeatureConfig,
+    hasher: &crate::hash::FeatureHasher,
+    log2_d: u32,
+    k: usize,
+    dst: &mut [i32],
+) -> usize {
+    // Keys are hashed one 8-block at a time (auto-vectorized under an
+    // SIMD-enabled build); the (rare) block flushes are outlined so the
+    // per-key emission loop stays minimal. A partial final block and the
+    // k-truncation zone run scalar.
+    let mut out = 0usize;
+    let mut buf = [0u64; 8];
+    let mut nbuf = 0usize;
+    for_each_key(text, cfg, |key| {
+        if out == k {
+            return;
+        }
+        buf[nbuf] = key;
+        nbuf += 1;
+        if nbuf == 8 {
+            nbuf = 0;
+            flush_block(hasher, &buf, log2_d, k, dst, &mut out);
+        }
+    });
+    for &key in &buf[..nbuf] {
+        if out == k {
+            break;
+        }
+        dst[out] = hasher.signed_index(key, log2_d);
+        out += 1;
+    }
+    out
+}
+
+/// Flush one full 8-key block through [`FeatureHasher::signed_index_block`],
+/// scalar with k-truncation when the row tail is shorter than a block.
+/// Outlined (`inline(never)`) on purpose — it runs once per eight keys, and
+/// keeping its bulk out of the emission loop is measurably worth the call.
+#[inline(never)]
+fn flush_block(
+    hasher: &crate::hash::FeatureHasher,
+    buf: &[u64; 8],
+    log2_d: u32,
+    k: usize,
+    dst: &mut [i32],
+    out: &mut usize,
+) {
+    if *out + 8 <= k {
+        hasher.signed_index_block(buf, log2_d, &mut dst[*out..]);
+        *out += 8;
+        return;
+    }
+    // Truncation zone: the row tail is shorter than a block.
+    for &key in buf {
+        if *out == k {
+            break;
+        }
+        dst[*out] = hasher.signed_index(key, log2_d);
+        *out += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,9 +570,9 @@ mod tests {
     #[test]
     fn lexical_tags_are_disjoint_from_char_keys() {
         assert_ne!(TAG_WORD, TAG_BIGRAM);
-        for n in 0..6 {
-            assert_ne!(TAG_WORD, N_TAG[n]);
-            assert_ne!(TAG_BIGRAM, N_TAG[n]);
+        for &tag in &N_TAG {
+            assert_ne!(TAG_WORD, tag);
+            assert_ne!(TAG_BIGRAM, tag);
         }
     }
 
@@ -533,12 +610,12 @@ mod tests {
             let mut prev: Option<u64> = None;
             for word in text.to_lowercase().split_whitespace() {
                 let seq: Vec<char> = std::iter::once(BOW).chain(word.chars()).chain(std::iter::once(EOW)).collect();
-                for n in cfg.n_min as usize..=cfg.n_max as usize {
-                    if n > seq.len() {
+                for (n, tag) in N_TAG.iter().enumerate().skip(cfg.n_min as usize) {
+                    if n > cfg.n_max as usize || n > seq.len() {
                         break;
                     }
                     for start in 0..=seq.len() - n {
-                        reference.push(pack_ngram(&seq[start..start + n]) ^ N_TAG[n]);
+                        reference.push(pack_ngram(&seq[start..start + n]) ^ tag);
                     }
                 }
                 let h = fnv_ref(&word.chars().map(|c| c as u64).collect::<Vec<_>>());
@@ -610,6 +687,43 @@ mod tests {
     }
 
     #[test]
+    fn fill_signed_indices_matches_bucket_tokens() {
+        let cfg = FeatureConfig::default();
+        let log2_d = 17u32;
+        let d = 1i32 << log2_d;
+        // Every hash id: fmix32 rides the vector block path, the others the
+        // scalar fallback — the fill contract is id-independent.
+        for id in crate::hash::HashId::ALL {
+            let hasher = crate::hash::FeatureHasher { id, seed: crate::hash::FeatureHasher::default().seed };
+            for text in [
+                "Привет @nick http://x.io 2020",
+                "Съешь ещё этих мягких французских булок",
+                "#красноярск да # нет",
+                "",
+            ] {
+                let toks = bucket_tokens(text, &cfg, &hasher, log2_d);
+                let expect: Vec<i32> = toks
+                    .iter()
+                    .map(|t| if t.neg { d + 1 + t.bucket as i32 } else { t.bucket as i32 })
+                    .collect();
+                // Untruncated fill reproduces the whole sequence.
+                let mut dst = vec![0i32; toks.len() + 5];
+                let n = fill_signed_indices(text, &cfg, &hasher, log2_d, dst.len(), &mut dst);
+                assert_eq!(n, expect.len());
+                assert_eq!(&dst[..n], &expect[..], "mismatch for {text:?} ({id:?})");
+                // Truncation: every k up past the block size keeps exactly
+                // the first k signed indices (covers block-boundary ks).
+                for k in 0..=expect.len().min(17) {
+                    let mut small = vec![0i32; k];
+                    let m = fill_signed_indices(text, &cfg, &hasher, log2_d, k, &mut small);
+                    assert_eq!(m, k.min(expect.len()));
+                    assert_eq!(&small[..m], &expect[..m]);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn word_classification() {
         use WordClass::*;
         // URLs: schemes, www, bare ASCII domains.
@@ -637,6 +751,12 @@ mod tests {
         assert_eq!(classify_word("миллион2020"), Word);
         assert_eq!(classify_word("U.S.A."), Word); // single-letter TLD
         assert_eq!(classify_word("Привет"), Word);
+        // The non-ASCII fast path must agree with the full classifier on
+        // words that trip its individual probes: '@' inside a Cyrillic word
+        // cannot form an email (non-ASCII local part), dots cannot form a
+        // domain, digits stay inert in non-ASCII tokens.
+        assert_eq!(classify_word("тест@пример.ру"), Word);
+        assert_eq!(classify_word("Ёлка"), Word); // U+0401: UTF-8 lead byte 0xD0
     }
 
     #[test]

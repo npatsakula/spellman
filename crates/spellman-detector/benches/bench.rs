@@ -6,7 +6,9 @@
 use std::path::PathBuf;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use spellman_detector::features::{bucket_tokens, token_keys, FeatureConfig};
+use spellman_detector::features::{
+    WordClass, bucket_tokens, classify_word, fill_signed_indices, token_keys, FeatureConfig,
+};
 use spellman_detector::hash::FeatureHasher;
 
 const RUS_TEXT: &str = "Съешь ещё этих мягких французских булок да выпей же чаю. \
@@ -40,6 +42,41 @@ fn bench_bucket_tokens(c: &mut Criterion) {
     group.finish();
 }
 
+/// Word classification in isolation (the per-word pass `for_each_key` runs
+/// before packing): splits and classifies the same words the extraction
+/// benches see.
+fn bench_classify(c: &mut Criterion) {
+    let mut group = c.benchmark_group("classify");
+    group.throughput(Throughput::Bytes(RUS_TEXT.len() as u64));
+    group.bench_function("rus words", |b| {
+        b.iter(|| {
+            let mut real = 0usize;
+            for w in black_box(RUS_TEXT).split_whitespace() {
+                let w = w.strip_prefix('#').unwrap_or(w);
+                if !w.is_empty() && classify_word(w) == WordClass::Word {
+                    real += 1;
+                }
+            }
+            real
+        })
+    });
+    group.finish();
+}
+
+/// The zero-copy streaming path the JIT input fill uses (signed indices
+/// written straight into the plan's row buffer, k-capped).
+fn bench_fill_indices(c: &mut Criterion) {
+    let cfg = FeatureConfig::default();
+    let hasher = FeatureHasher::default();
+    let mut dst = vec![0i32; 1024];
+    let mut group = c.benchmark_group("fill_indices");
+    group.throughput(Throughput::Bytes(RUS_TEXT.len() as u64));
+    group.bench_function("rus fmix32 d17 k1024", |b| {
+        b.iter(|| black_box(fill_signed_indices(black_box(RUS_TEXT), black_box(&cfg), black_box(&hasher), 17, 1024, &mut dst)))
+    });
+    group.finish();
+}
+
 /// Bulk batched detection through the svod JIT plan
 /// (`SPELLMAN_MODEL=... SPELLMAN_K=128 SPELLMAN_MAX_BATCH=512 cargo bench`).
 fn bench_bulk(c: &mut Criterion) {
@@ -52,7 +89,9 @@ fn bench_bulk(c: &mut Criterion) {
     let mut bulk = spellman_detector::BulkDetector::load(&PathBuf::from(&model_dir), k, max_batch)
         .expect("prepare bulk plan");
 
-    let texts: Vec<&str> = std::iter::repeat(RUS_TEXT).take(max_batch / 2).chain(std::iter::repeat(ENG_TEXT).take(max_batch / 2)).collect();
+    let texts: Vec<&str> = std::iter::repeat_n(RUS_TEXT, max_batch / 2)
+        .chain(std::iter::repeat_n(ENG_TEXT, max_batch / 2))
+        .collect();
     let bytes: u64 = texts.iter().map(|t| t.len() as u64).sum();
 
     let mut group = c.benchmark_group("detect_bulk");
@@ -64,5 +103,36 @@ fn bench_bulk(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_token_keys, bench_bucket_tokens, bench_bulk);
+/// Hash stage in isolation: the same key stream through the per-key scalar
+/// path and the 8-key block path, benched in one run (shared machine state).
+fn bench_hash_stage(c: &mut Criterion) {
+    let hasher = FeatureHasher::default();
+    let keys: Vec<u64> = token_keys(RUS_TEXT, &FeatureConfig::default());
+    let mut dst = vec![0i32; 1024];
+    let mut group = c.benchmark_group("hash_stage");
+    group.throughput(Throughput::Elements(keys.len() as u64));
+    group.bench_function("scalar per-key", |b| {
+        b.iter(|| {
+            for (d, &k) in dst.iter_mut().zip(keys.iter().cycle()).take(1024) {
+                *d = black_box(hasher.signed_index(black_box(k), 17));
+            }
+        })
+    });
+    group.bench_function("block8", |b| {
+        b.iter(|| {
+            for (out, chunk) in dst
+                .as_chunks_mut::<8>()
+                .0
+                .iter_mut()
+                .zip(keys.as_chunks::<8>().0.iter().cycle())
+                .take(128)
+            {
+                hasher.signed_index_block(black_box(chunk), 17, out);
+            }
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(benches, bench_token_keys, bench_bucket_tokens, bench_classify, bench_fill_indices, bench_hash_stage, bench_bulk);
 criterion_main!(benches);
