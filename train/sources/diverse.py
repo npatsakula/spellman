@@ -63,6 +63,9 @@ _TOKEN = re.compile(r"[^\W\d_]+", re.UNICODE)
 #: is redundant and they crowd out shorter, wilder rows
 _MAX_TOKENS = 40
 
+#: selection length-band width in chars (algo >= 5)
+_BAND_WIDTH = 20
+
 
 def _sentences(text: str, min_chars: int, max_chars: int) -> list[str]:
     out = []
@@ -103,6 +106,10 @@ class Diverse(Dataset):
     #: top-N lemmas (by pool sentence-frequency) each get >= min_exposures picks
     expose_top: int = 15_000
     min_exposures: int = 3
+    #: top lemmas should be exposed in >= this many DISTINCT length bands
+    #: (clamped to the band count): vocabulary must be length-robust, not
+    #: only learned from long sentences
+    min_bands: int = 3
     min_chars: int = 20
     max_chars: int = 200
     #: cap on candidate sentences held in memory
@@ -113,8 +120,11 @@ class Diverse(Dataset):
     norm: str = ""
     #: selection algorithm version — bump to bust every diverse cache
     #: (2 = lazy greedy: length-biased, regressed; 3 = + strata;
-    #:  4 = stratified first-come, v1 rule + strata + df weights)
-    algo: int = 4
+    #:  4 = stratified first-come, v1 rule + strata + df weights;
+    #:  5 = + 20-char bands + per-(lemma,band) exposure spread;
+    #:  6 = + fill pass: variety rows top up the budget after coverage
+    #:      saturates, so short pools keep their register breadth)
+    algo: int = 6
 
     name = "diverse"
 
@@ -219,29 +229,33 @@ class Diverse(Dataset):
 
     # -------------------------------------------------------- selection
 
-    #: length strata (char counts): selection runs WITHIN each stratum,
-    #: budget shared by the stratum's pool share. An unstratified
-    #: optimizer — even per-pick lazy greedy — prefers long sentences
-    #: (more new lemmas per pick): measured on v8, the rus lane came out
-    #: mean 149 chars with ZERO rows <=40, every referee regressed.
-    #: Stratifying keeps the lane's length profile at the pool's natural
-    #: shape (the 20-200 window was chosen to match wild inference).
-    _STRATA = (60, 120)
+    #: length-band width in chars: selection runs WITHIN bands across the
+    #: pool range, budget shared by each band's pool share. An
+    #: unstratified optimizer — even per-pick lazy greedy — prefers long
+    #: sentences (more new lemmas per pick): measured on v8, the rus lane
+    #: came out mean 149 chars with ZERO rows <=40, every referee
+    #: regressed. Banding keeps the lane's length profile at the pool's
+    #: natural shape (the 20-200 window was chosen to match wild
+    #: inference lengths).
 
     def _select(self, texts: list[str], lemma_lists: list[list[str]]) -> list[int]:
-        """Stratified first-come coverage selection; accepted indices in
+        """Banded first-come coverage selection; accepted indices in
         acceptance order.
 
         Measured history (held-out ukr->rus / rst-v2 / short):
           v1 shuffle first-come ..... 217 / 92.94 / 90.24  (the baseline)
           v2 lazy greedy max-first .. 347 / 92.02 / 91.11
           v2 + min_df=1 ............. 426 / 91.86 / 89.55
+          v4 stratified first-come .. 222 / 93.40 / 90.07  (shipped wave A)
         Max-first optimization harvests the globally richest sentences
         first and distorts register/topic mix — coverage works better as
         an acceptance FILTER over a random shuffle than as an objective
-        to maximize. So: seeded shuffle (v1's rule) within length strata
-        (v2's fix), gains weighted by df >= min_df (v2's fix), exposure
-        floors for the top of the vocabulary (v1's rule).
+        to maximize. algo=5 keeps v4's rule and adds per-length bands
+        (20-char bins across the pool range): band-proportional budget
+        caps, and exposure floors counted per (lemma, band) so the top
+        of the vocabulary is seen in SEVERAL length regimes — a lemma
+        learned only from 150-char sentences doesn't fire reliably when
+        a 25-char input hits it with unseen char n-gram context.
         """
         t0 = time.time()
         df: Counter[str] = Counter()
@@ -250,22 +264,28 @@ class Diverse(Dataset):
         top = set(sorted(df, key=df.get, reverse=True)[: self.expose_top])
         covered: set[str] = set()
         exposures: dict[str, int] = {}
+        bands_seen: dict[str, set[int]] = {}
+
+        n_bands = max(1, (self.max_chars - self.min_chars) // _BAND_WIDTH + 1)
+        min_bands = min(self.min_bands, n_bands)
+
+        def band_of(i: int) -> int:
+            return min((len(texts[i]) - self.min_chars) // _BAND_WIDTH, n_bands - 1)
 
         cands = [i for i, ls in enumerate(lemma_lists) if ls and len(ls) <= _MAX_TOKENS]
         rng = random.Random(self.seed)
         rng.shuffle(cands)
-        strata: list[list[int]] = [[], [], []]
+        band_lists: list[list[int]] = [[] for _ in range(n_bands)]
         for i in cands:
-            n = len(texts[i])
-            strata[0 if n <= self._STRATA[0] else 1 if n <= self._STRATA[1] else 2].append(i)
+            band_lists[band_of(i)].append(i)
 
-        total = sum(len(s) for s in strata)
-        caps = [round(self.budget * len(s) / max(1, total)) for s in strata]
-        taken = [0, 0, 0]
+        total = sum(len(b) for b in band_lists)
+        caps = [round(self.budget * len(b) / max(1, total)) for b in band_lists]
+        taken = [0] * n_bands
         order: list[int] = []
         accepted: set[int] = set()
 
-        def accept(i: int) -> None:
+        def accept(i: int, bi: int) -> None:
             order.append(i)
             accepted.add(i)
             for lemma in set(lemma_lists[i]):
@@ -273,59 +293,66 @@ class Diverse(Dataset):
                     covered.add(lemma)
                 if lemma in top:
                     exposures[lemma] = exposures.get(lemma, 0) + 1
+                    bands_seen.setdefault(lemma, set()).add(bi)
 
-        def try_accept(i: int, si: int, others_done: bool) -> bool:
+        def try_accept(i: int, bi: int, others_done: bool) -> bool:
             new = 0
             starved = False
             for lemma in set(lemma_lists[i]):
                 if df[lemma] >= self.min_df and lemma not in covered:
                     new += 1
-                if lemma in top and exposures.get(lemma, 0) < self.min_exposures:
-                    starved = True
+                if lemma in top:
+                    seen = bands_seen.get(lemma, ())
+                    if exposures.get(lemma, 0) < self.min_exposures or (
+                        len(seen) < min_bands and bi not in seen
+                    ):
+                        starved = True
             if not (new >= self.min_gain or (starved and new >= 1)):
                 return False
-            if taken[si] >= caps[si] and not others_done:
-                return False  # stratum full; revisit on the drain pass
-            accept(i)
-            taken[si] += 1
+            if taken[bi] >= caps[bi] and not others_done:
+                return False  # band full; revisit on the drain pass
+            accept(i, bi)
+            taken[bi] += 1
             return True
 
-        # pass 1: one walk over the shuffled candidates, stratum caps enforced
-        for si, stratum in enumerate(strata):
-            for i in stratum:
+        # pass 1: one walk over the shuffled candidates, band caps enforced
+        for bi, band in enumerate(band_lists):
+            for i in band:
                 if len(order) >= self.budget:
                     break
-                try_accept(i, si, others_done=False)
-        # pass 2: budget left on the table (some stratum exhausted early)
-        # -> drain every stratum, caps lifted
+                try_accept(i, bi, others_done=False)
+        # pass 2: budget left on the table (some band exhausted early)
+        # -> drain every band, caps lifted
         if len(order) < self.budget:
-            for si, stratum in enumerate(strata):
-                for i in stratum:
+            for bi, band in enumerate(band_lists):
+                for i in band:
                     if len(order) >= self.budget:
                         break
                     if i not in accepted:
-                        try_accept(i, si, others_done=True)
+                        try_accept(i, bi, others_done=True)
+        # pass 3: fill — coverage can saturate well before the budget is
+        # spent (short wild pools: 57k rows collapse to ~7k once every
+        # df>=2 lemma is covered). Measured v10b: that compression made
+        # the ukr lexical channel far stronger (ukr->rus confusions
+        # halved) but over-concentrated register/topic so badly that the
+        # twins referee fell 2.3pp. The budget is the contract: coverage
+        # picks the head, the shuffle's variety rows fill the tail.
+        if len(order) < self.budget:
+            for i in cands:
+                if len(order) >= self.budget:
+                    break
+                if i not in accepted:
+                    accept(i, band_of(i))
 
         objective = sum(1 for lemma in df if df[lemma] >= self.min_df)
-        short = sum(1 for i in order if len(texts[i]) <= self._STRATA[0])
+        spread = sum(1 for lemma in top if len(bands_seen.get(lemma, ())) >= min_bands)
+        kept_per_band = ",".join(str(t) for t in taken)
         print(
             f"  diverse[{self.lang}]: kept {len(order):,}/{len(texts):,} sentences "
-            f"({100 * short / max(1, len(order)):.0f}% <= {self._STRATA[0]} chars); "
+            f"(bands[{self.min_chars}-{self.max_chars}] kept {kept_per_band}); "
             f"lemmas covered {len(covered):,}/{objective:,} df>={self.min_df} "
             f"({100 * len(covered) / max(1, objective):.0f}%); top-{self.expose_top:,} "
-            f"exposed {len(covered & top):,}; select {time.time() - t0:.0f}s",
-            flush=True,
-        )
-        return order
-
-        objective = sum(1 for lemma in df if df[lemma] >= self.min_df)
-        short = sum(1 for i in order if len(texts[i]) <= self._STRATA[0])
-        print(
-            f"  diverse[{self.lang}]: kept {len(order):,}/{len(texts):,} sentences "
-            f"({100 * short / max(1, len(order)):.0f}% <= {self._STRATA[0]} chars); "
-            f"lemmas covered {len(covered):,}/{objective:,} df>={self.min_df} "
-            f"({100 * len(covered) / max(1, objective):.0f}%); top-{self.expose_top:,} "
-            f"exposed {len(covered & top):,}; select {time.time() - t0:.0f}s",
+            f"spread over >={min_bands} bands: {spread:,}; select {time.time() - t0:.0f}s",
             flush=True,
         )
         return order
