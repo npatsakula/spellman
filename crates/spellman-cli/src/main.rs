@@ -93,9 +93,10 @@ enum Command {
 /// when warm); anything else is a local path, used as-is.
 fn resolve_model(spec: &str) -> Result<PathBuf, Box<dyn Error>> {
     match spellman_detector::hub::parse_hub_ref(spec) {
-        Some((repo, variant)) => {
-            Ok(spellman_detector::hub::download_model(&repo, variant.as_deref())?)
-        }
+        Some((repo, variant)) => Ok(spellman_detector::hub::download_model(
+            &repo,
+            variant.as_deref(),
+        )?),
         None => Ok(spec.into()),
     }
 }
@@ -112,7 +113,11 @@ fn main() {
     let result = match &cli.command {
         Command::Detect { lines, json, plan } => detect(&model_dir, *lines, *json, plan),
         Command::Eval { files, plan } => eval(&model_dir, files, plan),
-        Command::Bench { plan, repeats, single } => bench(&model_dir, plan, *repeats, *single),
+        Command::Bench {
+            plan,
+            repeats,
+            single,
+        } => bench(&model_dir, plan, *repeats, *single),
     };
     if let Err(err) = result {
         eprintln!("spellman: {err}");
@@ -140,7 +145,12 @@ fn write_detection(out: &mut impl Write, d: &Detection, json: bool) -> io::Resul
     }
 }
 
-fn detect(model_dir: &Path, lines: bool, json: bool, plan: &PlanArgs) -> Result<(), Box<dyn Error>> {
+fn detect(
+    model_dir: &Path,
+    lines: bool,
+    json: bool,
+    plan: &PlanArgs,
+) -> Result<(), Box<dyn Error>> {
     let mut input = String::new();
     let mut stdin = io::stdin().lock();
     stdin.read_to_string(&mut input)?;
@@ -184,8 +194,16 @@ fn eval(model_dir: &Path, files: &[PathBuf], plan: &PlanArgs) -> Result<(), Box<
     if rows.is_empty() {
         return Err(format!("no usable rows (skipped {skipped}) in {files:?}").into());
     }
-    let note = if skipped > 0 { format!(" ({skipped} rows skipped)") } else { String::new() };
-    println!("eval: {} samples from {} file(s){note}", rows.len(), files.len());
+    let note = if skipped > 0 {
+        format!(" ({skipped} rows skipped)")
+    } else {
+        String::new()
+    };
+    println!(
+        "eval: {} samples from {} file(s){note}",
+        rows.len(),
+        files.len()
+    );
 
     let mut detector = BulkDetector::load(model_dir, plan.k, plan.batch())?;
     let refs: Vec<&str> = rows.iter().map(|(_, t)| t.as_str()).collect();
@@ -202,8 +220,16 @@ fn eval(model_dir: &Path, files: &[PathBuf], plan: &PlanArgs) -> Result<(), Box<
         }
     }
     let dt = t.elapsed();
-    println!("accuracy:   {}/{} ({:.2}%)", ok, rows.len(), 100.0 * ok as f64 / rows.len() as f64);
-    println!("throughput: {dt:?} total, {:.1} µs/sample", dt.as_micros() as f64 / rows.len() as f64);
+    println!(
+        "accuracy:   {}/{} ({:.2}%)",
+        ok,
+        rows.len(),
+        100.0 * ok as f64 / rows.len() as f64
+    );
+    println!(
+        "throughput: {dt:?} total, {:.1} µs/sample",
+        dt.as_micros() as f64 / rows.len() as f64
+    );
     Ok(())
 }
 
@@ -223,7 +249,12 @@ const PROBES: [&str; 11] = [
     "12345 !!!",              // no supported-script letters
 ];
 
-fn bench(model_dir: &Path, plan: &PlanArgs, repeats: usize, single: bool) -> Result<(), Box<dyn Error>> {
+fn bench(
+    model_dir: &Path,
+    plan: &PlanArgs,
+    repeats: usize,
+    single: bool,
+) -> Result<(), Box<dyn Error>> {
     let batch = plan.batch().max(PROBES.len());
     let t = Instant::now();
     let mut bulk = BulkDetector::load(model_dir, plan.k, batch)?;
@@ -240,7 +271,10 @@ fn bench(model_dir: &Path, plan: &PlanArgs, repeats: usize, single: bool) -> Res
     println!("probes (k={}, batch={batch}):", plan.k);
     for (text, d) in PROBES.iter().zip(&results) {
         let flag = if d.is_uncertain { "  (uncertain)" } else { "" };
-        println!("  {:>40.40}  {:?}  conf={:.3}{flag}", text, d.lang, d.confidence);
+        println!(
+            "  {:>40.40}  {:?}  conf={:.3}{flag}",
+            text, d.lang, d.confidence
+        );
     }
 
     let mut times = Vec::with_capacity(repeats);
@@ -274,7 +308,11 @@ mod tests {
     use super::*;
 
     fn detection(lang: Option<Lang>, confidence: f32, uncertain: bool) -> Detection {
-        Detection { lang, confidence, is_uncertain: uncertain }
+        Detection {
+            lang,
+            confidence,
+            is_uncertain: uncertain,
+        }
     }
 
     #[test]

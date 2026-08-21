@@ -33,8 +33,8 @@ use svod_model::jit::InputSpec;
 use svod_tensor::{BoundVariable, Tensor};
 
 use crate::Detection;
-use spellman_language::{Lang, NUM_LANGS};
 use snafu::prelude::*;
+use spellman_language::{Lang, NUM_LANGS};
 
 use crate::model::Model;
 
@@ -220,7 +220,8 @@ impl BulkDetector {
     /// ([`hub::DEFAULT_HUB_REPO`], f16) — svod's `from_hub` wiring: the
     /// first call downloads into the HF cache, later calls replay it.
     pub fn from_hub(k: usize, max_batch: usize) -> Result<BulkDetector, BulkError> {
-        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, None).context(HubSnafu)?;
+        let dir =
+            crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, None).context(HubSnafu)?;
         Self::load(&dir, k, max_batch)
     }
 
@@ -231,7 +232,8 @@ impl BulkDetector {
         k: usize,
         max_batch: usize,
     ) -> Result<BulkDetector, BulkError> {
-        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, Some(variant)).context(HubSnafu)?;
+        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, Some(variant))
+            .context(HubSnafu)?;
         Self::load(&dir, k, max_batch)
     }
 
@@ -310,9 +312,9 @@ impl BulkDetector {
             .context(JitSnafu)?
             .as_array_mut::<i32>()
             .context(DeviceSnafu)?;
-        let flat: &mut [i32] = view
-            .as_slice_mut()
-            .ok_or_else(|| BulkError::View { message: "input buffer not contiguous".into() })?;
+        let flat: &mut [i32] = view.as_slice_mut().ok_or_else(|| BulkError::View {
+            message: "input buffer not contiguous".into(),
+        })?;
         let counts: Vec<AtomicU32> = (0..flat.len() / k).map(|_| AtomicU32::new(0)).collect();
         flat.chunks_mut(k)
             .zip(&row_texts)
@@ -446,13 +448,15 @@ impl SingleDetector {
     /// Load the default model from the Hugging Face Hub (f16 variant);
     /// see [`BulkDetector::from_hub`] for the caching behavior.
     pub fn from_hub(k: usize) -> Result<SingleDetector, BulkError> {
-        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, None).context(HubSnafu)?;
+        let dir =
+            crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, None).context(HubSnafu)?;
         Self::load(&dir, k)
     }
 
     /// Load a storage-format variant of the default Hub model.
     pub fn from_hub_variant(variant: &str, k: usize) -> Result<SingleDetector, BulkError> {
-        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, Some(variant)).context(HubSnafu)?;
+        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, Some(variant))
+            .context(HubSnafu)?;
         Self::load(&dir, k)
     }
 
@@ -481,9 +485,9 @@ impl SingleDetector {
                         .context(JitSnafu)?
                         .as_array_mut::<i32>()
                         .context(DeviceSnafu)?;
-                    let flat: &mut [i32] = view
-                        .as_slice_mut()
-                        .ok_or_else(|| BulkError::View { message: "input buffer not contiguous".into() })?;
+                    let flat: &mut [i32] = view.as_slice_mut().ok_or_else(|| BulkError::View {
+                        message: "input buffer not contiguous".into(),
+                    })?;
                     let row = &mut flat[..k];
                     let pad = d as i32;
                     let out = crate::features::fill_signed_indices(

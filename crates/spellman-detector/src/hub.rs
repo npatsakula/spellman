@@ -55,7 +55,9 @@ pub fn download_model(repo_id: &str, variant: Option<&str>) -> Result<PathBuf, H
     ));
     let prefix = variant.map(|v| format!("{v}/")).unwrap_or_default();
     repo.get(&format!("{prefix}model.json")).context(ApiSnafu)?;
-    let weights = repo.get(&format!("{prefix}model.safetensors")).context(ApiSnafu)?;
+    let weights = repo
+        .get(&format!("{prefix}model.safetensors"))
+        .context(ApiSnafu)?;
     Ok(weights.parent().ok_or(HubError::NoParent)?.to_path_buf())
 }
 

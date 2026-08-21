@@ -41,10 +41,10 @@ pub use route::{Route, ScriptGroup};
 // the boundary. Every language type the detector's API leaks —
 // `Detection.lang`, `Lang::script`, `FromStr::Err`, … — resolves through
 // these aliases, and `spellman_detector::Lang` is the one type to use.
-pub use spellman_language::{Lang, NUM_LANGS, Script, UnknownLang, char_script};
 /// The table macro, re-exported so inventory definitions also stay
 /// single-sourced (see the `spellman-language` crate).
 pub use spellman_language::languages;
+pub use spellman_language::{Lang, NUM_LANGS, Script, UnknownLang, char_script};
 
 /// A single detection result.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,7 +74,9 @@ mod tests {
         assert_eq!(lang.script(), Script::Cyrillic);
         assert_eq!(char_script('қ'), Some(Script::Cyrillic));
         assert_eq!(Lang::ALL.len(), NUM_LANGS);
-        let Err(err) = "nope".parse::<Lang>() else { panic!("unknown code parsed") };
+        let Err(err) = "nope".parse::<Lang>() else {
+            panic!("unknown code parsed")
+        };
         assert!(matches!(err, UnknownLang(_)));
     }
 }

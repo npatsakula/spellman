@@ -107,7 +107,10 @@ pub struct FeatureHasher {
 
 impl Default for FeatureHasher {
     fn default() -> Self {
-        FeatureHasher { id: HashId::Fmix32, seed: 0x9E37_79B9 }
+        FeatureHasher {
+            id: HashId::Fmix32,
+            seed: 0x9E37_79B9,
+        }
     }
 }
 
@@ -124,7 +127,8 @@ impl FeatureHasher {
                 fmix32(h)
             }
             HashId::Murmur2 => {
-                murmurhash2(lo ^ self.seed, self.seed) ^ murmurhash2(hi ^ self.seed.rotate_left(16), self.seed.rotate_left(16))
+                murmurhash2(lo ^ self.seed, self.seed)
+                    ^ murmurhash2(hi ^ self.seed.rotate_left(16), self.seed.rotate_left(16))
             }
             HashId::MultiplyShift => {
                 // Top 32 bits of key * C (mod 2^64). The low bits of a
@@ -196,7 +200,11 @@ impl FeatureHasher {
     #[inline(always)]
     pub fn signed_index(&self, key: u64, log2_d: u32) -> i32 {
         let (b, neg) = self.bucket(key, log2_d);
-        if neg { (1i32 << log2_d) + 1 + b as i32 } else { b as i32 }
+        if neg {
+            (1i32 << log2_d) + 1 + b as i32
+        } else {
+            b as i32
+        }
     }
 }
 
@@ -245,17 +253,28 @@ mod tests {
     #[test]
     fn buckets_in_range_and_deterministic() {
         let hasher = FeatureHasher::default();
-        let keys: Vec<u64> = (0..10_000u64).map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15)).collect();
+        let keys: Vec<u64> = (0..10_000u64)
+            .map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+            .collect();
         for log2_d in [12u32, 16, 17, 20] {
             for &b in &buckets_of(&hasher, &keys, log2_d) {
                 assert!(b < (1 << log2_d));
             }
         }
         // Determinism: same key, same bucket.
-        assert_eq!(buckets_of(&hasher, &keys, 17), buckets_of(&hasher, &keys, 17));
+        assert_eq!(
+            buckets_of(&hasher, &keys, 17),
+            buckets_of(&hasher, &keys, 17)
+        );
         // Seeds change the assignment.
-        let other = FeatureHasher { id: HashId::Fmix32, seed: 7 };
-        assert_ne!(buckets_of(&hasher, &keys, 17), buckets_of(&other, &keys, 17));
+        let other = FeatureHasher {
+            id: HashId::Fmix32,
+            seed: 7,
+        };
+        assert_ne!(
+            buckets_of(&hasher, &keys, 17),
+            buckets_of(&other, &keys, 17)
+        );
     }
 
     #[test]
@@ -291,11 +310,16 @@ mod tests {
         // API) and a spread of bucket widths.
         let mut key = 0x243F_6A88_85A3_08D3u64;
         let mut next = || {
-            key = key.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            key = key
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             key
         };
         for id in HashId::ALL {
-            let hasher = FeatureHasher { id, seed: 0x9E37_79B9 };
+            let hasher = FeatureHasher {
+                id,
+                seed: 0x9E37_79B9,
+            };
             for log2_d in [4u32, 8, 12, 17, 24] {
                 for _ in 0..64 {
                     let keys: [u64; 8] = std::array::from_fn(|_| next());

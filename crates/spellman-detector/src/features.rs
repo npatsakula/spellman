@@ -200,7 +200,10 @@ fn is_ascii_domain(s: &str) -> bool {
     if !s.is_ascii() || !s.contains('.') {
         return false;
     }
-    if !s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-')) {
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+    {
         return false;
     }
     let labels: Vec<&str> = s.split('.').collect();
@@ -233,7 +236,9 @@ pub fn classify_word(word: &str) -> WordClass {
     if let Some((local, domain)) = word.split_once('@')
         && !domain.contains('@')
         && !local.is_empty()
-        && local.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'%' | b'+' | b'-'))
+        && local
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'%' | b'+' | b'-'))
         && is_ascii_domain(domain)
     {
         return WordClass::Email;
@@ -295,7 +300,12 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
         *r = (*r << CP_BITS) | (c & CP_MASK);
         *len += 1;
         let upper = n_max.min(*len);
-        for (n, tag) in N_TAG.iter().enumerate().take(upper + 1).skip(cfg.n_min as usize) {
+        for (n, tag) in N_TAG
+            .iter()
+            .enumerate()
+            .take(upper + 1)
+            .skip(cfg.n_min as usize)
+        {
             let window = match n {
                 1 => *r & M1,
                 2 => *r & M2,
@@ -528,7 +538,10 @@ mod tests {
         assert_eq!(keys[7], pack_ngram(&['b', EOW]) ^ N_TAG[2]);
         assert_eq!(keys[8], pack_ngram(&['a', 'b', EOW]) ^ N_TAG[3]);
         // Lexical: unigram of the single word (no bigram — first word).
-        assert_eq!(keys[9], word_unigram_key(fnv_ref(&['a' as u64, 'b' as u64])));
+        assert_eq!(
+            keys[9],
+            word_unigram_key(fnv_ref(&['a' as u64, 'b' as u64]))
+        );
     }
 
     fn fnv_ref(cps: &[u64]) -> u64 {
@@ -604,12 +617,21 @@ mod tests {
         // reference per-window packing (order differs, values must not),
         // including the lexical channel.
         let cfg = FeatureConfig { n_min: 1, n_max: 5 };
-        for text in ["ab", "abc", "привет мир", "Съешь ещё этих", "гнійеже ґава їжак"] {
+        for text in [
+            "ab",
+            "abc",
+            "привет мир",
+            "Съешь ещё этих",
+            "гнійеже ґава їжак",
+        ] {
             let rolling = token_keys(text, &cfg);
             let mut reference = Vec::new();
             let mut prev: Option<u64> = None;
             for word in text.to_lowercase().split_whitespace() {
-                let seq: Vec<char> = std::iter::once(BOW).chain(word.chars()).chain(std::iter::once(EOW)).collect();
+                let seq: Vec<char> = std::iter::once(BOW)
+                    .chain(word.chars())
+                    .chain(std::iter::once(EOW))
+                    .collect();
                 for (n, tag) in N_TAG.iter().enumerate().skip(cfg.n_min as usize) {
                     if n > cfg.n_max as usize || n > seq.len() {
                         break;
@@ -694,7 +716,10 @@ mod tests {
         // Every hash id: fmix32 rides the vector block path, the others the
         // scalar fallback — the fill contract is id-independent.
         for id in crate::hash::HashId::ALL {
-            let hasher = crate::hash::FeatureHasher { id, seed: crate::hash::FeatureHasher::default().seed };
+            let hasher = crate::hash::FeatureHasher {
+                id,
+                seed: crate::hash::FeatureHasher::default().seed,
+            };
             for text in [
                 "Привет @nick http://x.io 2020",
                 "Съешь ещё этих мягких французских булок",
@@ -704,7 +729,13 @@ mod tests {
                 let toks = bucket_tokens(text, &cfg, &hasher, log2_d);
                 let expect: Vec<i32> = toks
                     .iter()
-                    .map(|t| if t.neg { d + 1 + t.bucket as i32 } else { t.bucket as i32 })
+                    .map(|t| {
+                        if t.neg {
+                            d + 1 + t.bucket as i32
+                        } else {
+                            t.bucket as i32
+                        }
+                    })
                     .collect();
                 // Untruncated fill reproduces the whole sequence.
                 let mut dst = vec![0i32; toks.len() + 5];
@@ -781,7 +812,10 @@ mod tests {
 
         // Hashtags keep their word (real language evidence).
         let cfg1 = FeatureConfig { n_min: 1, n_max: 1 };
-        assert_eq!(token_keys("#красноярск", &cfg1), token_keys("красноярск", &cfg1));
+        assert_eq!(
+            token_keys("#красноярск", &cfg1),
+            token_keys("красноярск", &cfg1)
+        );
         // ...but a digit-bearing hashtag canonicalizes.
         assert_eq!(token_keys("#2020", &cfg1), token_keys("2020", &cfg1));
 

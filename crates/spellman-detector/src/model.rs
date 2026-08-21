@@ -51,7 +51,10 @@ fn default_scheme() -> String {
 
 impl Default for QuantSpec {
     fn default() -> Self {
-        QuantSpec { dtype: default_dtype(), scheme: default_scheme() }
+        QuantSpec {
+            dtype: default_dtype(),
+            scheme: default_scheme(),
+        }
     }
 }
 
@@ -126,8 +129,14 @@ pub enum ModelError {
     },
     #[snafu(display("missing tensor: {name}"))]
     MissingTensor { name: String },
-    #[snafu(display("tensor shape mismatch for {name}: expected {expected} elements, got {actual}"))]
-    ShapeMismatch { name: String, expected: usize, actual: usize },
+    #[snafu(display(
+        "tensor shape mismatch for {name}: expected {expected} elements, got {actual}"
+    ))]
+    ShapeMismatch {
+        name: String,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 impl Model {
@@ -156,7 +165,10 @@ impl Model {
     }
 
     /// Build the host-side (CPU fast path) model from a preloaded state dict.
-    pub fn from_state_dict(sd: &svod_model::state::StateDict, metadata: ModelMetadata) -> Result<Model, ModelError> {
+    pub fn from_state_dict(
+        sd: &svod_model::state::StateDict,
+        metadata: ModelMetadata,
+    ) -> Result<Model, ModelError> {
         Self::validate(&metadata)?;
         let (p, bias) = resolve_table(sd, &metadata)?;
 
@@ -169,23 +181,40 @@ impl Model {
             });
         }
         if bias.len() != NUM_LANGS {
-            return Err(ModelError::ShapeMismatch { name: "bias".into(), expected: NUM_LANGS, actual: bias.len() });
+            return Err(ModelError::ShapeMismatch {
+                name: "bias".into(),
+                expected: NUM_LANGS,
+                actual: bias.len(),
+            });
         }
 
         let hasher = FeatureHasher {
-            id: HashId::from_id(&metadata.hash)
-                .ok_or_else(|| ModelError::Metadata { message: format!("unknown hash id: {}", metadata.hash) })?,
+            id: HashId::from_id(&metadata.hash).ok_or_else(|| ModelError::Metadata {
+                message: format!("unknown hash id: {}", metadata.hash),
+            })?,
             seed: metadata.seed,
         };
-        let features = FeatureConfig { n_min: metadata.n_min, n_max: metadata.n_max };
+        let features = FeatureConfig {
+            n_min: metadata.n_min,
+            n_max: metadata.n_max,
+        };
 
         let log2_d = metadata.log2_d;
-        Ok(Model { metadata, table: p, bias, log2_d, features, hasher })
+        Ok(Model {
+            metadata,
+            table: p,
+            bias,
+            log2_d,
+            features,
+            hasher,
+        })
     }
 
     fn validate(metadata: &ModelMetadata) -> Result<(), ModelError> {
         if metadata.format != "spellman-model" {
-            return Err(ModelError::Metadata { message: format!("unexpected format: {}", metadata.format) });
+            return Err(ModelError::Metadata {
+                message: format!("unexpected format: {}", metadata.format),
+            });
         }
         if metadata.version != 3 {
             return Err(ModelError::Metadata {
@@ -220,10 +249,15 @@ impl Model {
             });
         }
         if !(1..31).contains(&metadata.log2_d) {
-            return Err(ModelError::Metadata { message: format!("log2_d out of range: {}", metadata.log2_d) });
+            return Err(ModelError::Metadata {
+                message: format!("log2_d out of range: {}", metadata.log2_d),
+            });
         }
         let legal_quant = matches!(
-            (metadata.quant.dtype.as_str(), metadata.quant.scheme.as_str()),
+            (
+                metadata.quant.dtype.as_str(),
+                metadata.quant.scheme.as_str()
+            ),
             ("float16", "none")
                 | ("int8", "row")
                 | ("int8", "column")
@@ -253,7 +287,10 @@ fn resolve_table(
     let d = 1usize << metadata.log2_d;
     let bias = read_cast_f32(sd, "bias")?;
 
-    let mut table = match (metadata.quant.dtype.as_str(), metadata.quant.scheme.as_str()) {
+    let mut table = match (
+        metadata.quant.dtype.as_str(),
+        metadata.quant.scheme.as_str(),
+    ) {
         ("float16", "none") => read_cast_f32(sd, "P")?,
         (dtype @ ("int8" | "fp8e4m3"), scheme @ ("row" | "column")) => {
             let per_row = scheme == "row";
@@ -267,14 +304,24 @@ fn resolve_table(
                 });
             }
             let values: Vec<f32> = if dtype == "int8" {
-                read_i8(sd, "P")?.into_iter().map(i32::from).map(|v| v as f32).collect()
+                read_i8(sd, "P")?
+                    .into_iter()
+                    .map(i32::from)
+                    .map(|v| v as f32)
+                    .collect()
             } else {
                 read_u8(sd, "P")?.iter().map(|&b| e4m3_to_f32(b)).collect()
             };
             values
                 .into_iter()
                 .enumerate()
-                .map(|(i, v)| v * scales[if per_row { i / NUM_LANGS } else { i % NUM_LANGS }])
+                .map(|(i, v)| {
+                    v * scales[if per_row {
+                        i / NUM_LANGS
+                    } else {
+                        i % NUM_LANGS
+                    }]
+                })
                 .collect()
         }
         _ => unreachable!("validate() rejects every other combination"),
@@ -295,20 +342,37 @@ fn resolve_table(
 /// materialize (these values never enter a graph); the JIT table path uses
 /// `.contiguous()` boundaries instead, see `jit::SpellmanModel::from_table`.
 fn read_cast_f32(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<f32>, ModelError> {
-    let tensor = sd.get(name).cloned().ok_or_else(|| ModelError::MissingTensor { name: name.to_owned() })?;
-    let mut cast = tensor.cast(svod_dtype::DType::Float32).context(TensorSnafu)?;
+    let tensor = sd
+        .get(name)
+        .cloned()
+        .ok_or_else(|| ModelError::MissingTensor {
+            name: name.to_owned(),
+        })?;
+    let mut cast = tensor
+        .cast(svod_dtype::DType::Float32)
+        .context(TensorSnafu)?;
     cast.realize().context(TensorSnafu)?;
     cast.as_vec::<f32>().context(TensorSnafu)
 }
 
 fn read_i8(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<i8>, ModelError> {
-    let mut tensor = sd.get(name).cloned().ok_or_else(|| ModelError::MissingTensor { name: name.to_owned() })?;
+    let mut tensor = sd
+        .get(name)
+        .cloned()
+        .ok_or_else(|| ModelError::MissingTensor {
+            name: name.to_owned(),
+        })?;
     tensor.realize().context(TensorSnafu)?;
     tensor.as_vec::<i8>().context(TensorSnafu)
 }
 
 fn read_u8(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<u8>, ModelError> {
-    let mut tensor = sd.get(name).cloned().ok_or_else(|| ModelError::MissingTensor { name: name.to_owned() })?;
+    let mut tensor = sd
+        .get(name)
+        .cloned()
+        .ok_or_else(|| ModelError::MissingTensor {
+            name: name.to_owned(),
+        })?;
     tensor.realize().context(TensorSnafu)?;
     tensor.as_vec::<u8>().context(TensorSnafu)
 }
@@ -335,10 +399,16 @@ pub fn e4m3_to_f32(bits: u8) -> f32 {
 /// Read and validate `model.json` from a model directory.
 pub fn read_metadata(dir: &Path) -> Result<ModelMetadata, ModelError> {
     let meta_path = dir.join("model.json");
-    let metadata: ModelMetadata = serde_json::from_str(&fs::read_to_string(&meta_path).context(IoSnafu)?)
-        .map_err(|e| ModelError::Metadata { message: format!("{meta_path:?}: {e}") })?;
+    let metadata: ModelMetadata =
+        serde_json::from_str(&fs::read_to_string(&meta_path).context(IoSnafu)?).map_err(|e| {
+            ModelError::Metadata {
+                message: format!("{meta_path:?}: {e}"),
+            }
+        })?;
     if metadata.format != "spellman-model" {
-        return Err(ModelError::Metadata { message: format!("unexpected format: {}", metadata.format) });
+        return Err(ModelError::Metadata {
+            message: format!("unexpected format: {}", metadata.format),
+        });
     }
     Ok(metadata)
 }
@@ -357,16 +427,30 @@ pub(crate) mod test_support {
         table[21] = -5.0; // eng
         let bias = vec![0.0f32; NUM_LANGS];
         let meta = fixture_metadata();
-        std::fs::write(dir.join("model.json"), serde_json::to_string(&meta).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("model.json"),
+            serde_json::to_string(&meta).unwrap(),
+        )
+        .unwrap();
         safetensors::serialize_to_file(
             vec![
                 (
                     "P",
-                    safetensors::tensor::TensorView::new(safetensors::Dtype::F32, vec![d + 1, NUM_LANGS], bytemuck::cast_slice(&table)).unwrap(),
+                    safetensors::tensor::TensorView::new(
+                        safetensors::Dtype::F32,
+                        vec![d + 1, NUM_LANGS],
+                        bytemuck::cast_slice(&table),
+                    )
+                    .unwrap(),
                 ),
                 (
                     "bias",
-                    safetensors::tensor::TensorView::new(safetensors::Dtype::F32, vec![NUM_LANGS], bytemuck::cast_slice(&bias)).unwrap(),
+                    safetensors::tensor::TensorView::new(
+                        safetensors::Dtype::F32,
+                        vec![NUM_LANGS],
+                        bytemuck::cast_slice(&bias),
+                    )
+                    .unwrap(),
                 ),
             ],
             None,
@@ -398,10 +482,16 @@ pub(crate) mod test_support {
     pub fn write_int8_model(dir: &std::path::Path, scheme: &str) {
         let d = 1usize << 12;
         let mut table = vec![0.0f32; (d + 1) * NUM_LANGS];
-        table[0] = 5.0;   // rus
+        table[0] = 5.0; // rus
         table[21] = -5.0; // eng
         let per_row = scheme == "row";
-        let scale_index = |i: usize| if per_row { i / NUM_LANGS } else { i % NUM_LANGS };
+        let scale_index = |i: usize| {
+            if per_row {
+                i / NUM_LANGS
+            } else {
+                i % NUM_LANGS
+            }
+        };
         let n_scales = if per_row { d + 1 } else { NUM_LANGS };
 
         let mut scales = vec![0.0f32; n_scales];
@@ -419,24 +509,49 @@ pub(crate) mod test_support {
             .collect();
         let bias = vec![0.0f32; NUM_LANGS];
         let meta = ModelMetadata {
-            quant: QuantSpec { dtype: "int8".into(), scheme: scheme.into() },
+            quant: QuantSpec {
+                dtype: "int8".into(),
+                scheme: scheme.into(),
+            },
             ..fixture_metadata()
         };
 
-        std::fs::write(dir.join("model.json"), serde_json::to_string(&meta).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("model.json"),
+            serde_json::to_string(&meta).unwrap(),
+        )
+        .unwrap();
         fn view<'a>(
             name: &'a str,
             dtype: safetensors::Dtype,
             shape: Vec<usize>,
             bytes: &'a [u8],
         ) -> (&'a str, safetensors::tensor::TensorView<'a>) {
-            (name, safetensors::tensor::TensorView::new(dtype, shape, bytes).unwrap())
+            (
+                name,
+                safetensors::tensor::TensorView::new(dtype, shape, bytes).unwrap(),
+            )
         }
         safetensors::serialize_to_file(
             vec![
-                view("P", safetensors::Dtype::I8, vec![d + 1, NUM_LANGS], bytemuck::cast_slice(&q)),
-                view("bias", safetensors::Dtype::F32, vec![NUM_LANGS], bytemuck::cast_slice(&bias)),
-                view("scales", safetensors::Dtype::F32, vec![n_scales], bytemuck::cast_slice(&scales)),
+                view(
+                    "P",
+                    safetensors::Dtype::I8,
+                    vec![d + 1, NUM_LANGS],
+                    bytemuck::cast_slice(&q),
+                ),
+                view(
+                    "bias",
+                    safetensors::Dtype::F32,
+                    vec![NUM_LANGS],
+                    bytemuck::cast_slice(&bias),
+                ),
+                view(
+                    "scales",
+                    safetensors::Dtype::F32,
+                    vec![n_scales],
+                    bytemuck::cast_slice(&scales),
+                ),
             ],
             None,
             &dir.join("model.safetensors"),
@@ -468,7 +583,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         test_support::write_test_model(tmp.path());
         let meta_path = tmp.path().join("model.json");
-        let mut meta: ModelMetadata = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        let mut meta: ModelMetadata =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
         meta.languages.reverse();
         std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
         assert!(Model::load(tmp.path()).is_err());
@@ -495,7 +611,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         test_support::write_test_model(tmp.path());
         let meta_path = tmp.path().join("model.json");
-        let mut meta: ModelMetadata = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        let mut meta: ModelMetadata =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
         meta.version = 2;
         meta.lexical = false;
         std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
@@ -512,7 +629,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         test_support::write_int8_model(tmp.path(), "row");
         let meta_path = tmp.path().join("model.json");
-        let mut meta: ModelMetadata = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        let mut meta: ModelMetadata =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
         meta.quant.scheme = "banana".into();
         std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
         assert!(Model::load(tmp.path()).is_err());
@@ -530,7 +648,7 @@ mod tests {
         assert_eq!(e4m3_to_f32(0x7E), 448.0); // max finite (e4m3fn has no inf)
         assert_eq!(e4m3_to_f32(0x01), 0.001953125); // subnormal: 1 × 2^-9
         assert_eq!(e4m3_to_f32(0x03), 0.005859375); // 3 × 2^-9
-        assert_eq!(e4m3_to_f32(0x08), 0.015625);    // smallest normal: 2^-6
+        assert_eq!(e4m3_to_f32(0x08), 0.015625); // smallest normal: 2^-6
         assert!(e4m3_to_f32(0x7F).is_nan());
         // Monotone across the positive normal range.
         let mut prev = 0.0f32;
