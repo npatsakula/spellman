@@ -1,0 +1,7 @@
+# Build everything for the building machine's full ISA. The featurizer's
+# block-hash loop (FeatureHasher::signed_index_block) relies on this to
+# auto-vectorize; a plain `cargo build` without it stays correct but scalar.
+# NOTE: binaries produced this way are build-machine-specific (e.g. a Zen 4
+# build emits AVX-512 that older CPUs cannot execute) — do not distribute.
+[build]
+rustflags = ["-C", "target-cpu=native"]
