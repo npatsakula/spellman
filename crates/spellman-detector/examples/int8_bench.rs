@@ -27,11 +27,11 @@ use svod_macros::jit_wrapper;
 use svod_model::jit::InputSpec;
 use svod_tensor::{BoundVariable, Tensor};
 
-use spellman_detector::features::{bucket_tokens, FeatureConfig};
-use spellman_detector::hash::FeatureHasher;
-use spellman_detector::jit::{f16_to_f32, SpellmanJit, SpellmanModel};
-use spellman_detector::model::Model;
 use spellman_detector::BulkDetector;
+use spellman_detector::features::{FeatureConfig, bucket_tokens};
+use spellman_detector::hash::FeatureHasher;
+use spellman_detector::jit::{SpellmanJit, SpellmanModel, f16_to_f32};
+use spellman_detector::model::Model;
 
 /// Int8 weight model: `q` block then `-q` block, `[2*(D+1), C]`, per-column
 /// scales kept host-side (applied at read-out).
@@ -60,18 +60,26 @@ impl Int8Model {
         let mut both = Vec::with_capacity(2 * q.len());
         both.extend_from_slice(&q);
         both.extend(q.iter().map(|v| -v));
-        let table = Tensor::from_slice(&both).try_reshape([2 * (d + 1) as isize, cols as isize]).unwrap();
+        let table = Tensor::from_slice(&both)
+            .try_reshape([2 * (d + 1) as isize, cols as isize])
+            .unwrap();
         Int8Model { table, scales }
     }
 
-    fn forward_batch(&self, idx: &Tensor, b: &BoundVariable) -> Result<Tensor, svod_tensor::error::Error> {
+    fn forward_batch(
+        &self,
+        idx: &Tensor,
+        b: &BoundVariable,
+    ) -> Result<Tensor, svod_tensor::error::Error> {
         let bv = b.as_sint();
         let idx = idx.try_shrink([Some((SInt::Const(0), bv.clone())), None])?;
         let idx = idx.cast(svod_dtype::DType::Int64)?;
         let rows = self.table.embedding(&idx)?; // [b, K, C] i8
         // Int8 casts only to Int16 on the lattice; widen twice before the
         // K-sum (i16 would overflow past K=259 at |q|=127).
-        rows.cast(svod_dtype::DType::Int16)?.cast(svod_dtype::DType::Int32)?.sum(1)
+        rows.cast(svod_dtype::DType::Int16)?
+            .cast(svod_dtype::DType::Int32)?
+            .sum(1)
     }
 }
 
@@ -103,7 +111,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(256);
     let reps: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(50);
     let beam = std::env::var("BEAM").unwrap_or_default();
-    println!("model={} k={k} batch={batch} reps={reps} BEAM={beam:?}", model_dir.display());
+    println!(
+        "model={} k={k} batch={batch} reps={reps} BEAM={beam:?}",
+        model_dir.display()
+    );
 
     let model = Model::load(&model_dir)?;
     let d = model.num_buckets() as usize;
@@ -123,9 +134,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fill = |flat: &mut [i32]| {
         let mut state = 0x9E37_79B9u64;
         for (i, slot) in flat.iter_mut().enumerate() {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let bucket = ((state >> 33) as usize) % (d + 1);
-            *slot = if (i / k + i).is_multiple_of(2) { bucket as i32 } else { (d + 1 + bucket) as i32 };
+            *slot = if (i / k + i).is_multiple_of(2) {
+                bucket as i32
+            } else {
+                (d + 1 + bucket) as i32
+            };
         }
     };
     {
@@ -141,10 +158,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         f16_plan.execute_with_vars(&[("b", batch as i64)])?;
         let mut f16_sums = vec![0u16; batch * cols];
-        f16_plan.output()?.copyout_prefix(bytemuck::cast_slice_mut(&mut f16_sums))?;
+        f16_plan
+            .output()?
+            .copyout_prefix(bytemuck::cast_slice_mut(&mut f16_sums))?;
         let mut i32_sums = vec![0i32; batch * cols];
         i8_plan.execute_with_vars(&[("b", batch as i64)])?;
-        i8_plan.output()?.copyout_prefix(bytemuck::cast_slice_mut(&mut i32_sums))?;
+        i8_plan
+            .output()?
+            .copyout_prefix(bytemuck::cast_slice_mut(&mut i32_sums))?;
 
         let mut worst_abs = 0f32;
         let mut worst_rel = 0f32;
@@ -160,7 +181,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        println!("cross-check (8 rows): max abs diff {worst_abs:.2}, max rel diff on |logit|>50: {worst_rel:.4}");
+        println!(
+            "cross-check (8 rows): max abs diff {worst_abs:.2}, max rel diff on |logit|>50: {worst_rel:.4}"
+        );
     }
 
     // ---- timings -----------------------------------------------------------
@@ -212,7 +235,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Featurize-only, single-threaded (the real path rayon-izes across rows).
     {
         let cfg = FeatureConfig::default();
-        let hasher = FeatureHasher { id: model.hasher.id, seed: model.hasher.seed };
+        let hasher = FeatureHasher {
+            id: model.hasher.id,
+            seed: model.hasher.seed,
+        };
         let docs: Vec<&str> = (0..batch).map(|i| TEXTS[i % TEXTS.len()]).collect();
         for d_ in docs.iter().take(4) {
             std::hint::black_box(bucket_tokens(d_, &cfg, &hasher, model.log2_d).len());
@@ -233,7 +259,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // End-to-end reference through the shipped bulk path.
     {
         let mut det = BulkDetector::load(&model_dir, k, batch)?;
-        let docs: Vec<String> = (0..batch).map(|i| TEXTS[i % TEXTS.len()].to_string()).collect();
+        let docs: Vec<String> = (0..batch)
+            .map(|i| TEXTS[i % TEXTS.len()].to_string())
+            .collect();
         let refs: Vec<&str> = docs.iter().map(String::as_str).collect();
         det.detect_batch(&refs)?;
         let t = Instant::now();

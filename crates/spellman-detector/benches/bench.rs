@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use spellman_detector::features::{
-    WordClass, bucket_tokens, classify_word, fill_signed_indices, token_keys, FeatureConfig,
+    FeatureConfig, WordClass, bucket_tokens, classify_word, fill_signed_indices, token_keys,
 };
 use spellman_detector::hash::FeatureHasher;
 
@@ -37,7 +37,15 @@ fn bench_bucket_tokens(c: &mut Criterion) {
     let mut group = c.benchmark_group("bucket_tokens");
     group.throughput(Throughput::Bytes(RUS_TEXT.len() as u64));
     group.bench_function("rus fmix32 d17", |b| {
-        b.iter(|| black_box(bucket_tokens(black_box(RUS_TEXT), black_box(&cfg), black_box(&hasher), 17)).len())
+        b.iter(|| {
+            black_box(bucket_tokens(
+                black_box(RUS_TEXT),
+                black_box(&cfg),
+                black_box(&hasher),
+                17,
+            ))
+            .len()
+        })
     });
     group.finish();
 }
@@ -72,7 +80,16 @@ fn bench_fill_indices(c: &mut Criterion) {
     let mut group = c.benchmark_group("fill_indices");
     group.throughput(Throughput::Bytes(RUS_TEXT.len() as u64));
     group.bench_function("rus fmix32 d17 k1024", |b| {
-        b.iter(|| black_box(fill_signed_indices(black_box(RUS_TEXT), black_box(&cfg), black_box(&hasher), 17, 1024, &mut dst)))
+        b.iter(|| {
+            black_box(fill_signed_indices(
+                black_box(RUS_TEXT),
+                black_box(&cfg),
+                black_box(&hasher),
+                17,
+                1024,
+                &mut dst,
+            ))
+        })
     });
     group.finish();
 }
@@ -83,9 +100,14 @@ fn bench_bulk(c: &mut Criterion) {
     let Ok(model_dir) = std::env::var("SPELLMAN_MODEL") else {
         return;
     };
-    let k: usize = std::env::var("SPELLMAN_K").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
-    let max_batch: usize =
-        std::env::var("SPELLMAN_MAX_BATCH").ok().and_then(|v| v.parse().ok()).unwrap_or(512);
+    let k: usize = std::env::var("SPELLMAN_K")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(128);
+    let max_batch: usize = std::env::var("SPELLMAN_MAX_BATCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(512);
     let mut bulk = spellman_detector::BulkDetector::load(&PathBuf::from(&model_dir), k, max_batch)
         .expect("prepare bulk plan");
 
@@ -134,5 +156,13 @@ fn bench_hash_stage(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_token_keys, bench_bucket_tokens, bench_classify, bench_fill_indices, bench_hash_stage, bench_bulk);
+criterion_group!(
+    benches,
+    bench_token_keys,
+    bench_bucket_tokens,
+    bench_classify,
+    bench_fill_indices,
+    bench_hash_stage,
+    bench_bulk
+);
 criterion_main!(benches);

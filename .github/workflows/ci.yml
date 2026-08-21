@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  flake-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: nix flake check
+        run: nix flake check -L
+
+      # Sanity: the CLI binary builds through nix and runs (the JIT plan
+      # itself is exercised by the `test` check's end-to-end smoke test).
+      - name: spellman --help smoke test
+        run: nix run . -- --help

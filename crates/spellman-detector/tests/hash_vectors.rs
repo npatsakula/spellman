@@ -9,9 +9,9 @@
 use std::fs;
 use std::path::Path;
 
-use spellman_detector::features::{bucket_tokens, token_keys, FeatureConfig};
-use spellman_detector::hash::{FeatureHasher, HashId};
 use serde::Deserialize;
+use spellman_detector::features::{FeatureConfig, bucket_tokens, token_keys};
+use spellman_detector::hash::{FeatureHasher, HashId};
 
 #[derive(Deserialize)]
 struct Case {
@@ -37,11 +37,18 @@ fn rust_matches_python_fixture() {
     let fixture: Fixture = serde_json::from_str(&fs::read_to_string(&path).unwrap())
         .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
 
-    assert!(!fixture.cases.is_empty(), "empty fixture — run `uv run spellman-gen-fixtures` in train/");
+    assert!(
+        !fixture.cases.is_empty(),
+        "empty fixture — run `uv run spellman-gen-fixtures` in train/"
+    );
     for case in &fixture.cases {
-        let cfg = FeatureConfig { n_min: case.n_min, n_max: case.n_max };
+        let cfg = FeatureConfig {
+            n_min: case.n_min,
+            n_max: case.n_max,
+        };
         let hasher = FeatureHasher {
-            id: HashId::from_id(&case.hash_id).unwrap_or_else(|| panic!("unknown hash id {}", case.hash_id)),
+            id: HashId::from_id(&case.hash_id)
+                .unwrap_or_else(|| panic!("unknown hash id {}", case.hash_id)),
             seed: case.seed,
         };
 
@@ -51,7 +58,8 @@ fn rust_matches_python_fixture() {
             .collect();
         let expected_keys: Vec<String> = case.keys.clone();
         assert_eq!(
-            keys, expected_keys,
+            keys,
+            expected_keys,
             "token keys diverge for {:?} ({})",
             case.text.chars().take(30).collect::<String>(),
             case.hash_id
@@ -61,7 +69,8 @@ fn rust_matches_python_fixture() {
         let buckets: Vec<u32> = toks.iter().map(|t| t.bucket).collect();
         let negs: Vec<u8> = toks.iter().map(|t| t.neg as u8).collect();
         assert_eq!(
-            buckets, case.buckets,
+            buckets,
+            case.buckets,
             "buckets diverge for {:?} ({}, log2_d={})",
             case.text.chars().take(30).collect::<String>(),
             case.hash_id,

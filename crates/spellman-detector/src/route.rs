@@ -7,7 +7,7 @@
 //! Latin and Cyrillic text goes to the corresponding script-group columns
 //! of the folded score table.
 
-use spellman_language::{Lang, Script, NUM_LANGS};
+use spellman_language::{Lang, NUM_LANGS, Script};
 
 /// Which model columns score a script's text.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -88,9 +88,17 @@ pub fn route(text: &str) -> Route {
     if kana > 0 {
         return Route::Direct(Lang::Jpn);
     }
-    let candidates =
-        [(Script::Latin, latin), (Script::Cyrillic, cyrillic), (Script::Han, han)];
-    if let Some((best, _)) = candidates.iter().copied().max_by_key(|(_, n)| *n).filter(|(_, n)| *n > 0) {
+    let candidates = [
+        (Script::Latin, latin),
+        (Script::Cyrillic, cyrillic),
+        (Script::Han, han),
+    ];
+    if let Some((best, _)) = candidates
+        .iter()
+        .copied()
+        .max_by_key(|(_, n)| *n)
+        .filter(|(_, n)| *n > 0)
+    {
         return match best {
             Script::Latin => Route::Group(ScriptGroup::Latin),
             Script::Cyrillic => Route::Group(ScriptGroup::Cyrillic),
@@ -113,10 +121,19 @@ mod tests {
 
     #[test]
     fn routes_by_script() {
-        assert_eq!(route("Привет, как дела?"), Route::Group(ScriptGroup::Cyrillic));
+        assert_eq!(
+            route("Привет, как дела?"),
+            Route::Group(ScriptGroup::Cyrillic)
+        );
         assert_eq!(route("Hello world"), Route::Group(ScriptGroup::Latin));
-        assert_eq!(route("¿Dónde está el baño?"), Route::Group(ScriptGroup::Latin));
-        assert_eq!(route("Привіт hello мир"), Route::Group(ScriptGroup::Cyrillic));
+        assert_eq!(
+            route("¿Dónde está el baño?"),
+            Route::Group(ScriptGroup::Latin)
+        );
+        assert_eq!(
+            route("Привіт hello мир"),
+            Route::Group(ScriptGroup::Cyrillic)
+        );
         assert_eq!(route("こんにちは世界"), Route::Direct(Lang::Jpn));
         assert_eq!(route("北京是中国的首都"), Route::Direct(Lang::Cmn));
         assert_eq!(route("नमस्ते दुनिया"), Route::Direct(Lang::Hin));
@@ -127,7 +144,10 @@ mod tests {
     #[test]
     fn kana_beats_kanji_count() {
         // Mostly kanji with a single kana char: still Japanese.
-        assert_eq!(route("東京駅へ行くのが好きですか"), Route::Direct(Lang::Jpn));
+        assert_eq!(
+            route("東京駅へ行くのが好きですか"),
+            Route::Direct(Lang::Jpn)
+        );
     }
 
     #[test]
@@ -140,8 +160,17 @@ mod tests {
         // group's languages are contiguous in Lang::ALL.
         for (i, lang) in Lang::ALL.iter().enumerate() {
             let group = group_of(*lang);
-            assert!(group.languages().contains(lang), "{} misplaced", lang.code());
-            assert!(group.column_range().contains(&i), "{} column {}", lang.code(), i);
+            assert!(
+                group.languages().contains(lang),
+                "{} misplaced",
+                lang.code()
+            );
+            assert!(
+                group.column_range().contains(&i),
+                "{} column {}",
+                lang.code(),
+                i
+            );
         }
     }
 }
