@@ -10,10 +10,14 @@
 //! - featurize-only (single-threaded reference; the real path rayon-izes it),
 //! - execute-only f16 plan vs execute-only int8 plan,
 //! - end-to-end `BulkDetector::detect_batch` for context,
+//!
 //! and cross-checks the two plans' logits (i32 sum × column scale vs f16 sum).
 //!
 //! Usage:
 //!   BEAM=2 cargo run --release --example int8_bench -- model/ [k] [batch] [reps]
+
+// svod's tensor Result crosses this probe's helper API.
+#![allow(clippy::result_large_err)]
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -56,7 +60,7 @@ impl Int8Model {
         let mut both = Vec::with_capacity(2 * q.len());
         both.extend_from_slice(&q);
         both.extend(q.iter().map(|v| -v));
-        let table = Tensor::from_slice(&both).try_reshape(&[2 * (d + 1) as isize, cols as isize]).unwrap();
+        let table = Tensor::from_slice(&both).try_reshape([2 * (d + 1) as isize, cols as isize]).unwrap();
         Int8Model { table, scales }
     }
 
@@ -67,7 +71,7 @@ impl Int8Model {
         let rows = self.table.embedding(&idx)?; // [b, K, C] i8
         // Int8 casts only to Int16 on the lattice; widen twice before the
         // K-sum (i16 would overflow past K=259 at |q|=127).
-        Ok(rows.cast(svod_dtype::DType::Int16)?.cast(svod_dtype::DType::Int32)?.sum(1)?)
+        rows.cast(svod_dtype::DType::Int16)?.cast(svod_dtype::DType::Int32)?.sum(1)
     }
 }
 
@@ -121,7 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (i, slot) in flat.iter_mut().enumerate() {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let bucket = ((state >> 33) as usize) % (d + 1);
-            *slot = if (i / k + i) % 2 == 0 { bucket as i32 } else { (d + 1 + bucket) as i32 };
+            *slot = if (i / k + i).is_multiple_of(2) { bucket as i32 } else { (d + 1 + bucket) as i32 };
         }
     };
     {
