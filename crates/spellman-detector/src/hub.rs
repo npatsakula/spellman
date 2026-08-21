@@ -13,13 +13,16 @@ use std::path::PathBuf;
 /// Default Hub repo: f16 at the root, quantized variants in subdirs.
 pub const DEFAULT_HUB_REPO: &str = "vpermilp/spellman";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, snafu::Snafu)]
 pub enum HubError {
-    #[error("hugging face hub: {0}")]
-    Api(#[from] hf_hub::api::sync::ApiError),
-    #[error("bad hub ref {0:?} (expected hf:<owner>/<repo>[/variant])")]
-    BadRef(String),
-    #[error("hub snapshot path has no parent directory")]
+    #[snafu(display("hugging face hub: {source}"))]
+    Api {
+        #[snafu(source(from(hf_hub::api::sync::ApiError, Box::new)))]
+        source: Box<hf_hub::api::sync::ApiError>,
+    },
+    #[snafu(display("bad hub ref {spec:?} (expected hf:<owner>/<repo>[/variant])"))]
+    BadRef { spec: String },
+    #[snafu(display("hub snapshot path has no parent directory"))]
     NoParent,
 }
 
@@ -42,15 +45,17 @@ pub fn parse_hub_ref(spec: &str) -> Option<(String, Option<String>)> {
 /// the snapshot directory — a drop-in for the local model directories
 /// the loaders take.
 pub fn download_model(repo_id: &str, variant: Option<&str>) -> Result<PathBuf, HubError> {
-    let api = hf_hub::api::sync::Api::new()?;
+    use snafu::prelude::*;
+
+    let api = hf_hub::api::sync::Api::new().context(ApiSnafu)?;
     let repo = api.repo(hf_hub::Repo::with_revision(
         repo_id.to_string(),
         hf_hub::RepoType::Model,
         "main".into(),
     ));
     let prefix = variant.map(|v| format!("{v}/")).unwrap_or_default();
-    repo.get(&format!("{prefix}model.json"))?;
-    let weights = repo.get(&format!("{prefix}model.safetensors"))?;
+    repo.get(&format!("{prefix}model.json")).context(ApiSnafu)?;
+    let weights = repo.get(&format!("{prefix}model.safetensors")).context(ApiSnafu)?;
     Ok(weights.parent().ok_or(HubError::NoParent)?.to_path_buf())
 }
 

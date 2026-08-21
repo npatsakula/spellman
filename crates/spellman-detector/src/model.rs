@@ -21,6 +21,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use snafu::prelude::*;
 
 use crate::features::FeatureConfig;
 use crate::hash::{FeatureHasher, HashId};
@@ -107,19 +108,25 @@ pub struct Model {
     pub hasher: FeatureHasher,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, snafu::Snafu)]
 pub enum ModelError {
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("state: {0}")]
-    State(#[from] svod_model::state::Error),
-    #[error("bad metadata: {0}")]
-    Metadata(String),
-    #[error("tensor: {0}")]
-    Tensor(#[from] svod_tensor::error::Error),
-    #[error("missing tensor: {0}")]
-    MissingTensor(String),
-    #[error("tensor shape mismatch for {name}: expected {expected} elements, got {actual}")]
+    #[snafu(display("io: {source}"))]
+    Io { source: std::io::Error },
+    #[snafu(display("state: {source}"))]
+    State {
+        #[snafu(source(from(svod_model::state::Error, Box::new)))]
+        source: Box<svod_model::state::Error>,
+    },
+    #[snafu(display("bad metadata: {message}"))]
+    Metadata { message: String },
+    #[snafu(display("tensor: {source}"))]
+    Tensor {
+        #[snafu(source(from(svod_tensor::error::Error, Box::new)))]
+        source: Box<svod_tensor::error::Error>,
+    },
+    #[snafu(display("missing tensor: {name}"))]
+    MissingTensor { name: String },
+    #[snafu(display("tensor shape mismatch for {name}: expected {expected} elements, got {actual}"))]
     ShapeMismatch { name: String, expected: usize, actual: usize },
 }
 
@@ -144,7 +151,7 @@ impl Model {
     /// [`crate::jit::SpellmanModel::from_table`].
     pub fn load(dir: &Path) -> Result<Model, ModelError> {
         let metadata = read_metadata(dir)?;
-        let sd = svod_model::state::load_safetensors_dir(dir)?;
+        let sd = svod_model::state::load_safetensors_dir(dir).context(StateSnafu)?;
         Self::from_state_dict(&sd, metadata)
     }
 
@@ -167,7 +174,7 @@ impl Model {
 
         let hasher = FeatureHasher {
             id: HashId::from_id(&metadata.hash)
-                .ok_or_else(|| ModelError::Metadata(format!("unknown hash id: {}", metadata.hash)))?,
+                .ok_or_else(|| ModelError::Metadata { message: format!("unknown hash id: {}", metadata.hash) })?,
             seed: metadata.seed,
         };
         let features = FeatureConfig { n_min: metadata.n_min, n_max: metadata.n_max };
@@ -178,38 +185,42 @@ impl Model {
 
     fn validate(metadata: &ModelMetadata) -> Result<(), ModelError> {
         if metadata.format != "spellman-model" {
-            return Err(ModelError::Metadata(format!("unexpected format: {}", metadata.format)));
+            return Err(ModelError::Metadata { message: format!("unexpected format: {}", metadata.format) });
         }
         if metadata.version != 3 {
-            return Err(ModelError::Metadata(format!(
-                "unsupported version: {} (this runtime speaks version 3, the \
-                 canonicalizing + lexical feature space)",
-                metadata.version
-            )));
+            return Err(ModelError::Metadata {
+                message: format!(
+                    "unsupported version: {} (this runtime speaks version 3, the \
+                     canonicalizing + lexical feature space)",
+                    metadata.version
+                ),
+            });
         }
         if !metadata.canonicalize {
-            return Err(ModelError::Metadata(
-                "model predates token-class canonicalization; retrain with the \
-                 current train/ pipeline"
+            return Err(ModelError::Metadata {
+                message: "model predates token-class canonicalization; retrain with the \
+                          current train/ pipeline"
                     .into(),
-            ));
+            });
         }
         if !metadata.lexical {
-            return Err(ModelError::Metadata(
-                "model predates the lexical word-ngram channel; retrain with the \
-                 current train/ pipeline"
+            return Err(ModelError::Metadata {
+                message: "model predates the lexical word-ngram channel; retrain with the \
+                          current train/ pipeline"
                     .into(),
-            ));
+            });
         }
         let expected: Vec<&str> = Lang::ALL.iter().map(|l| l.code()).collect();
         let actual: Vec<&str> = metadata.languages.iter().map(String::as_str).collect();
         if expected != actual {
-            return Err(ModelError::Metadata(format!(
-                "language inventory mismatch: model was trained for {actual:?}, runtime expects {expected:?}"
-            )));
+            return Err(ModelError::Metadata {
+                message: format!(
+                    "language inventory mismatch: model was trained for {actual:?}, runtime expects {expected:?}"
+                ),
+            });
         }
         if !(1..31).contains(&metadata.log2_d) {
-            return Err(ModelError::Metadata(format!("log2_d out of range: {}", metadata.log2_d)));
+            return Err(ModelError::Metadata { message: format!("log2_d out of range: {}", metadata.log2_d) });
         }
         let legal_quant = matches!(
             (metadata.quant.dtype.as_str(), metadata.quant.scheme.as_str()),
@@ -220,10 +231,12 @@ impl Model {
                 | ("fp8e4m3", "column")
         );
         if !legal_quant {
-            return Err(ModelError::Metadata(format!(
-                "unsupported quant spec: {}/{}",
-                metadata.quant.dtype, metadata.quant.scheme
-            )));
+            return Err(ModelError::Metadata {
+                message: format!(
+                    "unsupported quant spec: {}/{}",
+                    metadata.quant.dtype, metadata.quant.scheme
+                ),
+            });
         }
         Ok(())
     }
@@ -282,22 +295,22 @@ fn resolve_table(
 /// materialize (these values never enter a graph); the JIT table path uses
 /// `.contiguous()` boundaries instead, see `jit::SpellmanModel::from_table`.
 fn read_cast_f32(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<f32>, ModelError> {
-    let tensor = sd.get(name).cloned().ok_or_else(|| ModelError::MissingTensor(name.to_owned()))?;
-    let mut cast = tensor.cast(svod_dtype::DType::Float32)?;
-    cast.realize()?;
-    Ok(cast.as_vec::<f32>()?)
+    let tensor = sd.get(name).cloned().ok_or_else(|| ModelError::MissingTensor { name: name.to_owned() })?;
+    let mut cast = tensor.cast(svod_dtype::DType::Float32).context(TensorSnafu)?;
+    cast.realize().context(TensorSnafu)?;
+    cast.as_vec::<f32>().context(TensorSnafu)
 }
 
 fn read_i8(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<i8>, ModelError> {
-    let mut tensor = sd.get(name).cloned().ok_or_else(|| ModelError::MissingTensor(name.to_owned()))?;
-    tensor.realize()?;
-    Ok(tensor.as_vec::<i8>()?)
+    let mut tensor = sd.get(name).cloned().ok_or_else(|| ModelError::MissingTensor { name: name.to_owned() })?;
+    tensor.realize().context(TensorSnafu)?;
+    tensor.as_vec::<i8>().context(TensorSnafu)
 }
 
 fn read_u8(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<u8>, ModelError> {
-    let mut tensor = sd.get(name).cloned().ok_or_else(|| ModelError::MissingTensor(name.to_owned()))?;
-    tensor.realize()?;
-    Ok(tensor.as_vec::<u8>()?)
+    let mut tensor = sd.get(name).cloned().ok_or_else(|| ModelError::MissingTensor { name: name.to_owned() })?;
+    tensor.realize().context(TensorSnafu)?;
+    tensor.as_vec::<u8>().context(TensorSnafu)
 }
 
 /// Decode an FP8 E4M3FN value (OCP flavor: 4-bit exponent, bias 7, 3-bit
@@ -322,10 +335,10 @@ pub fn e4m3_to_f32(bits: u8) -> f32 {
 /// Read and validate `model.json` from a model directory.
 pub fn read_metadata(dir: &Path) -> Result<ModelMetadata, ModelError> {
     let meta_path = dir.join("model.json");
-    let metadata: ModelMetadata = serde_json::from_str(&fs::read_to_string(&meta_path)?)
-        .map_err(|e| ModelError::Metadata(format!("{meta_path:?}: {e}")))?;
+    let metadata: ModelMetadata = serde_json::from_str(&fs::read_to_string(&meta_path).context(IoSnafu)?)
+        .map_err(|e| ModelError::Metadata { message: format!("{meta_path:?}: {e}") })?;
     if metadata.format != "spellman-model" {
-        return Err(ModelError::Metadata(format!("unexpected format: {}", metadata.format)));
+        return Err(ModelError::Metadata { message: format!("unexpected format: {}", metadata.format) });
     }
     Ok(metadata)
 }

@@ -145,6 +145,59 @@ impl FeatureHasher {
         let bucket = h >> (32 - log2_d);
         (bucket, h & 1 == 1)
     }
+
+    /// Hash one full 8-key block into signed table indices (`bucket`, or
+    /// `D+1+bucket` for negative sign — the ±P doubled-table gather layout).
+    ///
+    /// The fmix32 arm is written as a flat loop of `wrapping_*` u32 ops —
+    /// exactly the arithmetic [`Self::hash_u64`] performs per key, so the
+    /// result is bit-identical — in the shape LLVM's auto-vectorizer turns
+    /// into eight exact SIMD lanes (AVX2 `vpmulld`/`vpsrlvd` with
+    /// `-C target-cpu=native` or `target-feature=+avx2`, NEON on aarch64).
+    /// No dispatch, no unsafe: a baseline build simply keeps the scalar
+    /// code, correct and slower. Other hash ids ride the per-key path.
+    pub fn signed_index_block(&self, keys: &[u64; 8], log2_d: u32, out: &mut [i32]) {
+        debug_assert!(out.len() >= 8);
+        debug_assert!(log2_d > 0 && log2_d < 32);
+        // Accumulate into a fixed-size local: indexing a runtime-length
+        // slice per element plants a bounds check the vectorizer cannot
+        // remove (the >= 8 contract is only a debug_assert), which pins the
+        // loop to unrolled scalar. The array keeps the loop check-free; the
+        // slice length is verified exactly once, by copy_from_slice.
+        let mut idx = [0i32; 8];
+        if self.id == HashId::Fmix32 {
+            let seed_k1 = self.seed.wrapping_mul(0x85EB_CA6B);
+            let d1 = (1u32 << log2_d) + 1;
+            let shift = 32 - log2_d;
+            for (i, &k) in keys.iter().enumerate() {
+                // hash_u64's fmix32 combine, then the finalizer.
+                let mut h = (k as u32) ^ seed_k1 ^ ((k >> 32) as u32).wrapping_mul(0xC2B2_AE35);
+                h ^= h >> 16;
+                h = h.wrapping_mul(0x85EB_CA6B);
+                h ^= h >> 13;
+                h = h.wrapping_mul(0xC2B2_AE35);
+                h ^= h >> 16;
+                // Bucket from the high bits, sign folded into the ±P range.
+                idx[i] = ((h >> shift).wrapping_add((h & 1).wrapping_mul(d1))) as i32;
+            }
+        } else {
+            let d1 = (1i32 << log2_d) + 1;
+            for (i, &k) in keys.iter().enumerate() {
+                let (b, neg) = self.bucket(k, log2_d);
+                idx[i] = if neg { d1 + b as i32 } else { b as i32 };
+            }
+        }
+        out[..8].copy_from_slice(&idx);
+    }
+
+    /// Signed table index of a single key (`bucket`, or `D+1+bucket` for
+    /// negative sign) — the scalar counterpart of
+    /// [`Self::signed_index_block`].
+    #[inline(always)]
+    pub fn signed_index(&self, key: u64, log2_d: u32) -> i32 {
+        let (b, neg) = self.bucket(key, log2_d);
+        if neg { (1i32 << log2_d) + 1 + b as i32 } else { b as i32 }
+    }
 }
 
 #[cfg(test)]
@@ -228,5 +281,36 @@ mod tests {
         }
         let max = counts.iter().copied().max().unwrap();
         assert!(max < 12, "max bucket occupancy {max} too skewed");
+    }
+
+    #[test]
+    fn signed_index_block_matches_scalar() {
+        // The vectorized (AVX2 on this class of machine) block path must
+        // reproduce per-key bucket() + sign arithmetic exactly, for every
+        // hash id (non-fmix ids ride the scalar fallback inside the block
+        // API) and a spread of bucket widths.
+        let mut key = 0x243F_6A88_85A3_08D3u64;
+        let mut next = || {
+            key = key.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            key
+        };
+        for id in HashId::ALL {
+            let hasher = FeatureHasher { id, seed: 0x9E37_79B9 };
+            for log2_d in [4u32, 8, 12, 17, 24] {
+                for _ in 0..64 {
+                    let keys: [u64; 8] = std::array::from_fn(|_| next());
+                    let mut got = [0i32; 8];
+                    hasher.signed_index_block(&keys, log2_d, &mut got);
+                    for i in 0..8 {
+                        assert_eq!(
+                            got[i],
+                            hasher.signed_index(keys[i], log2_d),
+                            "{id:?} log2_d={log2_d} key={:#x}",
+                            keys[i]
+                        );
+                    }
+                }
+            }
+        }
     }
 }

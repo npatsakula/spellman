@@ -277,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 out.push_str(&format!(
                     "{gold}\t{pred}\t{conf:.3}\t{}\t{}\n",
                     if *uncertain { "uncertain" } else { "" },
-                    text.replace('\t', " ").replace('\n', " ")
+                    text.replace(['\t', '\n'], " ")
                 ));
             }
             fs::write(&path, out)?;
