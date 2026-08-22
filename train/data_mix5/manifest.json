@@ -133,9 +133,9 @@
   "--source",
   "hf:repo=DGurgurov/bulgarian_sa,column=text,lang=bul,raw=True,docs=0,streaming=False,min_chars=3,max_chars=19",
   "--source",
-  "diverse:lang=rus,pool_repo=HuggingFaceFW/fineweb-2,pool_config=rus_Cyrl,pool_docs=300000,budget=14000",
+  "diverse:lang=rus,pool_repo=HuggingFaceFW/fineweb-2,pool_config=rus_Cyrl,pool_docs=300000,budget=20000",
   "--source",
-  "diverse:lang=ukr,pool_repo=HuggingFaceFW/fineweb-2,pool_config=ukr_Cyrl,pool_docs=300000,budget=14000",
+  "diverse:lang=ukr,pool_repo=HuggingFaceFW/fineweb-2,pool_config=ukr_Cyrl,pool_docs=300000,budget=20000",
   "--source",
   "hf:repo=YShynkarov/COSMUS,column=document_content,where=language_manual=russian,lang=rus,raw=True,docs=0,streaming=False,max_chars=512",
   "--source",
@@ -143,27 +143,29 @@
   "--source",
   "jsonl:path=cache/relabel_rus.jsonl",
   "--source",
-  "diverse:lang=kaz,pool_file=cache/kazsandra-eb6571e000.jsonl,budget=12000",
+  "diverse:lang=rus,pool_file=cache/wikisource-5da9d07b30.jsonl,budget=6000",
   "--source",
-  "diverse:lang=kir,pool_file=cache/leipzig-760d2c3408.jsonl,budget=12000",
+  "diverse:lang=kaz,pool_file=cache/kazsandra-eb6571e000.jsonl,budget=16000",
   "--source",
-  "diverse:lang=tgk,pool_file=cache/leipzig-f32200fb15.jsonl,budget=12000",
+  "diverse:lang=kir,pool_file=cache/leipzig-760d2c3408.jsonl,budget=16000",
   "--source",
-  "diverse:lang=uzn,pool_file=cache/hf-5711c74502.jsonl,budget=12000",
+  "diverse:lang=tgk,pool_file=cache/leipzig-f32200fb15.jsonl,budget=16000",
   "--source",
-  "diverse:lang=tat,pool_file=cache/hf-eb368f46e1.jsonl,budget=12000",
+  "diverse:lang=uzn,pool_file=cache/hf-5711c74502.jsonl,budget=16000",
   "--source",
-  "diverse:lang=bak,pool_file=cache/hf-05c948e9d7.jsonl,budget=12000",
+  "diverse:lang=tat,pool_file=cache/hf-eb368f46e1.jsonl,budget=16000",
   "--source",
-  "diverse:lang=chv,pool_file=cache/hf-4bb695f530.jsonl,budget=12000",
+  "diverse:lang=bak,pool_file=cache/hf-05c948e9d7.jsonl,budget=16000",
   "--source",
-  "diverse:lang=sah,pool_file=cache/hf-fc628b434a.jsonl,budget=12000",
+  "diverse:lang=chv,pool_file=cache/hf-4bb695f530.jsonl,budget=16000",
   "--source",
-  "diverse:lang=tyv,pool_file=cache/hf-b3c61b0e5a.jsonl,budget=12000",
+  "diverse:lang=sah,pool_file=cache/hf-fc628b434a.jsonl,budget=16000",
+  "--source",
+  "diverse:lang=tyv,pool_file=cache/hf-b3c61b0e5a.jsonl,budget=16000",
   "--cap-per-lang",
-  "16000",
+  "32000",
   "--short-floor",
-  "0.25",
+  "0.40",
   "--wild-augment",
   "0.3",
   "--short-augment",
@@ -172,10 +174,10 @@
   "4"
  ],
  "seed": 42,
- "cap_per_lang": 16000,
+ "cap_per_lang": 32000,
  "wild_augment": 0.3,
  "short_augment": 0.2,
- "short_floor": 0.25,
+ "short_floor": 0.4,
  "sources": [
   [
    "fineweb2",
@@ -849,7 +851,7 @@
     "pool_repo": "HuggingFaceFW/fineweb-2",
     "pool_config": "rus_Cyrl",
     "pool_docs": 300000,
-    "budget": 14000
+    "budget": 20000
    }
   ],
   [
@@ -859,7 +861,7 @@
     "pool_repo": "HuggingFaceFW/fineweb-2",
     "pool_config": "ukr_Cyrl",
     "pool_docs": 300000,
-    "budget": 14000
+    "budget": 20000
    }
   ],
   [
@@ -894,9 +896,17 @@
   [
    "diverse",
    {
+    "lang": "rus",
+    "pool_file": "cache/wikisource-5da9d07b30.jsonl",
+    "budget": 6000
+   }
+  ],
+  [
+   "diverse",
+   {
     "lang": "kaz",
     "pool_file": "cache/kazsandra-eb6571e000.jsonl",
-    "budget": 12000
+    "budget": 16000
    }
   ],
   [
@@ -904,7 +914,7 @@
    {
     "lang": "kir",
     "pool_file": "cache/leipzig-760d2c3408.jsonl",
-    "budget": 12000
+    "budget": 16000
    }
   ],
   [
@@ -912,7 +922,7 @@
    {
     "lang": "tgk",
     "pool_file": "cache/leipzig-f32200fb15.jsonl",
-    "budget": 12000
+    "budget": 16000
    }
   ],
   [
@@ -920,7 +930,7 @@
    {
     "lang": "uzn",
     "pool_file": "cache/hf-5711c74502.jsonl",
-    "budget": 12000
+    "budget": 16000
    }
   ],
   [
@@ -928,7 +938,7 @@
    {
     "lang": "tat",
     "pool_file": "cache/hf-eb368f46e1.jsonl",
-    "budget": 12000
+    "budget": 16000
    }
   ],
   [
@@ -936,7 +946,7 @@
    {
     "lang": "bak",
     "pool_file": "cache/hf-05c948e9d7.jsonl",
-    "budget": 12000
+    "budget": 16000
    }
   ],
   [
@@ -944,7 +954,7 @@
    {
     "lang": "chv",
     "pool_file": "cache/hf-4bb695f530.jsonl",
-    "budget": 12000
+    "budget": 16000
    }
   ],
   [
@@ -952,7 +962,7 @@
    {
     "lang": "sah",
     "pool_file": "cache/hf-fc628b434a.jsonl",
-    "budget": 12000
+    "budget": 16000
    }
   ],
   [
@@ -960,7 +970,7 @@
    {
     "lang": "tyv",
     "pool_file": "cache/hf-b3c61b0e5a.jsonl",
-    "budget": 12000
+    "budget": 16000
    }
   ]
  ]

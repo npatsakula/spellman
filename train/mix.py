@@ -224,7 +224,7 @@ def _prewarm_worker(spec: str) -> tuple[str, int]:
     replays them warm through its normal single-process path, keeping
     dedup order and RNG streams byte-identical to a sequential build.
     """
-    from sources import diverse, fineweb2, hf, leipzig, local, opus, tatoeba, ugc  # noqa: F401,E401,F403
+    from sources import diverse, fineweb2, gutenberg, hf, leipzig, local, opus, tatoeba, ugc, wikisource  # noqa: F401,E401,F403
 
     name, opts = parse_source(spec)
     ds = sources.create(name, **opts)
@@ -241,7 +241,7 @@ def prebuild_colds(specs: list[str], jobs: int) -> None:
     """
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    from sources import diverse, fineweb2, hf, leipzig, local, opus, tatoeba, ugc  # noqa: F401,E401,F403
+    from sources import diverse, fineweb2, gutenberg, hf, leipzig, local, opus, tatoeba, ugc, wikisource  # noqa: F401,E401,F403
 
     cold: list[str] = []
     for spec in specs:
@@ -306,7 +306,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Import adapters for their registration side effects.
-    from sources import diverse, fineweb2, hf, leipzig, local, opus, tatoeba, ugc  # noqa: F401,E401
+    from sources import diverse, fineweb2, gutenberg, hf, leipzig, local, opus, tatoeba, ugc, wikisource  # noqa: F401,E401
 
     if args.list:
         for name in registered():

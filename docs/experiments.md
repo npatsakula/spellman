@@ -109,3 +109,30 @@ coverage head + wild-register augmentation of the tail.
   still leads 99.25 vs 98.39).
 - Content-free → uncertain runtime policy (URL/mention-only rows).
 - bashkir-web-corpus (gated HF dataset, needs manual acceptance).
+
+## The literary-register arc (2026-08-22, post-v8e)
+
+detect_md over Война и мир showed 6.1% of sentences as tyv — diagnosis:
+literary vocabulary is OOV for the rus class (князь in 5/16k rus training
+rows, поручик/батальон in zero), so minority classes won on n-gram scraps.
+Fix: `wikisource` source adapter (ru.wikisource dumps, sentence-windowed,
+eval-corpus titles banned from the pool) + a literary diverse lane
+(budget 6000, pymorphy keys).
+
+- v11a (lit lane at cap 16k): lit referee 93.9→95.6 BUT rst −1.3 /
+  short −1.6 — under the cap, literary rows *displaced* wild-register
+  rus rows (the v8f lesson, mirrored).
+- v11b (cap 32k + diverse budgets ×1.5 + lit lane, train 410k→767k):
+  displacement gone — rst 94.05, cosmus 97.47, tatoeba 98.74, lit 97.70,
+  all best-ever; short −1.2 remained because the 25% short floor at 32k
+  wanted 8k short rows but rus only has ~5.3k (share diluted 25%→17%).
+- **v11c (v11b + --short-floor 0.40): the sweep** — vs shipped v8e:
+  rst 93.40→**94.47**, short 90.07→**91.29**, lit 93.90→**97.15**,
+  tatoeba 98.39→**98.78**, cosmus 96.72→**97.15**, ukr→rus 222→202;
+  voyna sweep tyv 6.1%→0.2%. Every referee ahead. (held-out 98.56 is on
+  the re-baselined 32k-cap test split — not comparable to the 98.31
+  published number.)
+- Cap-raise answer (the 16k→32k question): no measurable imbalance
+  damage — small-class F1s held, close-pair referees improved, because
+  the diverse budgets scaled with the cap; the risk lives in register
+  *composition* (short-floor), not class share.
