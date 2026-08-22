@@ -7,8 +7,10 @@
 //! allocation. Each worker owns its plan and input buffer, so batches never
 //! contend; the optimizer strategy is passed programmatically via
 //! `PrepareConfig` (beam vs heuristic), never through the BEAM env var.
-//! Sentences are split from the markdown at UAX #29 boundaries
-//! (unicode-segmentation), with heading lines dropped first.
+//! Sentences are split from the markdown with our own rule-based
+//! splitter (`spellman_detector::sent` — terminator runs, «closers»,
+//! initials, decimals, dialogue-dash rules), with heading lines dropped
+//! first; see the module docs for why not UAX #29.
 //!
 //! Memory note: every replica holds its own weights and buffers (~16 MB
 //! each at the default k/batch).
@@ -57,18 +59,15 @@ struct Args {
 }
 
 /// Split markdown text into sentences: heading lines are skipped, each
-/// remaining paragraph line is segmented at UAX #29 sentence boundaries
-/// (`split_sentence_bounds`). Letter/min-length filtering happens in
-/// `main`; the fragments it drops cost nothing.
+/// remaining paragraph line is segmented with `sent::split_line`
+/// (terminator runs + closers + initials + decimals + dialogue dashes —
+/// see the module docs). Letter/min-length filtering happens in `main`;
+/// the fragments it drops cost nothing.
 fn split_sentences(md: &str) -> Vec<String> {
-    use unicode_segmentation::UnicodeSegmentation;
-
     md.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .flat_map(|line| line.split_sentence_bounds())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .flat_map(spellman_detector::sent::split_line)
         .map(str::to_string)
         .collect()
 }

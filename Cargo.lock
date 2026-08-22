@@ -3071,7 +3071,6 @@ dependencies = [
  "svod-schedule",
  "svod-tensor",
  "tempfile",
- "unicode-segmentation",
 ]
 
 [[package]]
