@@ -110,6 +110,15 @@ coverage head + wild-register augmentation of the tail.
 - Content-free → uncertain runtime policy (URL/mention-only rows).
 - bashkir-web-corpus (gated HF dataset, needs manual acceptance).
 
+## v11c PROMOTED 2026-08-22 — current model
+
+Published (README + HF card, verified by sha256 + fresh-download eval):
+held-out 98.56 (352,470 rows, re-baselined 32k-cap split), rst-v2 94.47,
+short 91.29, literary 97.15 (new referee row), tatoeba 98.78
+(ladder 70.6/88.2/94.5), cosmus 97.15; ukr→rus 202. Quant gate: all four
+variants exactly 98.56. Baselines on the new split: GlotLID 93.28
+(buckets 77.0/92.1/97.6 — spellman leads every bucket), lid.176 82.91.
+
 ## The literary-register arc (2026-08-22, post-v8e)
 
 detect_md over Война и мир showed 6.1% of sentences as tyv — diagnosis:

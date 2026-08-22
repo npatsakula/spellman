@@ -21,12 +21,12 @@ from the same eval data):
 
 | eval | rung | spellman | GlotLID v3 | fastText lid.176 |
 |---|---|---|---|---|
-| held-out mix (238,985, pristine test) | text | **98.31%** | 93.58%‡ | 84.61%* |
-| Tatoeba (37,051, out-of-domain) | word / pair / triple | **66.6 / 86.2 / 93.3** | 43.9 / 79.3 / 91.9‡ | 59.0 / 79.0 / 87.9 |
-| Tatoeba (37,051, out-of-domain) | text | 98.39% | **99.25%**‡ | 94.90%* |
-| rusentitweet (2,606 wild Russian tweets, label-audited) | text | **93.40%**† | 82.73%‡ | 90.41% |
-| COSMUS Russian (2,808 wild Telegram/reviews, gold-labeled) | text | **96.72%** | 95.69%‡ | 96.65% |
-| short utterances (574, orthography-certified ≤19 chars) | text | **90.07%**† | 71.25%‡ | 84.32% |
+| held-out mix (352,470, pristine test) | text | **98.56%** | 93.28%‡ | 82.91%* |
+| Tatoeba (37,051, out-of-domain) | word / pair / triple | **70.6 / 88.2 / 94.5** | 43.9 / 79.3 / 91.9‡ | 59.0 / 79.0 / 87.9 |
+| Tatoeba (37,051, out-of-domain) | text | 98.78% | **99.25%**‡ | 94.90%* |
+| rusentitweet (2,606 wild Russian tweets, label-audited) | text | **94.47%**† | 82.73%‡ | 90.41% |
+| COSMUS Russian (2,808 wild Telegram/reviews, gold-labeled) | text | **97.15%** | 95.69%‡ | 96.65% |
+| short utterances (574, orthography-certified ≤19 chars) | text | **91.29%**† | 71.25%‡ | 84.32% |
 
 \* fastText scored on the subset of languages its label set supports
 (24/30; no kpv/udm labels, and its `uz` is Latin-script Uzbek — it scores
@@ -53,14 +53,14 @@ the open-LID SOTA fastText model (2,102 labels, 1.7 GB), scored with
 script-variant labels mapped to our classes (`tat_Latn` → tat — the
 courtesy goes to the baseline) and full coverage of the evals' languages
 (ara/cmn are absent from its label set; neither appears in these files).
-By length: held-out 79.2 / 92.4 / 97.5 (≤20 / 21–100 / >100 — spellman
+By length: held-out 77.0 / 92.1 / 97.6 (≤20 / 21–100 / >100 — spellman
 leads every bucket), Tatoeba 97.8 / 99.3 / 100.0 (GlotLID leads every
 bucket). It predicts at ~355 µs/doc — ~100× spellman on the M1 Pro,
 ~300× on the AMD 395 Max. The split is the story: spellman wins the
-wild, heavy-Cyrillic workload by 10.7pp on Russian tweets (93.4 vs 82.7) and the single-word rung by ~23pp
+wild, heavy-Cyrillic workload by 11.7pp on Russian tweets (94.5 vs 82.7) and the single-word rung by ~23pp
 (2,102-class label entropy is brutal on short text); GlotLID's far
 larger training set still wins clean out-of-domain sentences, by
-0.9pp.
+0.5pp.
 
 ### Against the Rust LID crates
 
@@ -75,13 +75,13 @@ our workload. Rerun:
 
 | detector | our classes | held-out: all rows | held-out: its subset | Tatoeba: all rows | Tatoeba: its subset | µs/sample |
 |---|---|---|---|---|---|---|
-| spellman (bulk) | 30/30 | **98.31%** | **98.31%** | **98.39%** | **98.39%** | 5.1 |
-| spellman (single) | 30/30 | **98.31%** | **98.31%** | **98.39%** | **98.39%** | 10.8 |
-| whichlang 0.1 | 10/30 | 27.49% | 90.56% | 32.28% | 99.67% | **1.6** |
-| lingua 1.8 (high) | 17/30 | 44.16% | 92.12% | 68.55% | 97.69% | 325 |
-| lingua 1.8 (low) | 17/30 | 42.05% | 87.73% | 65.38% | 93.17% | 365 |
+| spellman (bulk) | 30/30 | **98.56%** | **98.56%** | **98.78%** | **98.78%** | 5.9 |
+| spellman (single) | 30/30 | **98.56%** | **98.56%** | **98.78%** | **98.78%** | 11.2 |
+| whichlang 0.1 | 10/30 | 30.97% | 89.74% | 32.28% | 99.67% | **1.6** |
+| lingua 1.8 (high) | 17/30 | 43.15% | 91.82% | 68.55% | 97.69% | 289 |
+| lingua 1.8 (low) | 17/30 | 40.88% | 86.97% | 65.38% | 93.17% | 336 |
 
-(238,985 / 37,051 rows; Apple M1 Pro; spellman k=1024 under BEAM=16;
+(352,470 / 37,051 rows; Apple M1 Pro; spellman k=1024 under BEAM=16;
 µs/sample from the held-out file in this harness — the CLI eval path on
 the same data reads 4.9 µs/sample. "all rows" counts gold languages
 outside a tool's inventory as errors — what a 30-class Cyrillic workload
@@ -92,13 +92,13 @@ bucket (the buckets `assess` uses; for spellman the subset is all rows):
 
 | bucket | held-out mix (n) | spellman | whichlang | lingua high |
 |---|---|---|---|---|
-| ≤20 chars | 17,949 | **95.6%** | 88.5% | 82.0% |
-| 21–100 | 119,583 | **98.1%** | 86.7% | 91.4% |
-| >100 | 101,453 | **99.1%** | 96.7% | 98.1% |
+| ≤20 chars | 27,354 | **96.6%** | 88.5% | 82.0% |
+| 21–100 | 174,217 | **98.4%** | 86.7% | 91.4% |
+| >100 | 150,899 | **99.2%** | 96.7% | 98.1% |
 
 | bucket | Tatoeba (n) | spellman | whichlang | lingua high |
 |---|---|---|---|---|
-| ≤20 chars | 1,567 | 96.3% | **97.5%** | 92.8% |
+| ≤20 chars | 1,567 | 97.2% | **97.5%** | 92.8% |
 | 21–100 | 34,674 | 98.5% | **99.7%** | 97.8% |
 | >100 | 810 | 99.8% | 99.5% | **100.0%** |
 
@@ -113,18 +113,18 @@ What the numbers say:
   the 14–68% all-rows column.
 - **Short text is lingua's advertised strength — and spellman wins it**:
   on ≤20-char rows spellman leads lingua high-accuracy by 3–14pp on both
-  referees (96.3 vs 92.8 Tatoeba, 95.6 vs 82.0 held-out), and lingua's
+  referees (97.2 vs 92.8 Tatoeba, 96.6 vs 82.0 held-out), and lingua's
   low-accuracy mode collapses further. Mid-length is spellman's biggest
   gap over lingua (98.1 vs 91.4 held-out); at >100 chars everyone
   converges to 98–100% and the differences are coverage, not quality.
 - **On the languages they share with us, spellman wins the close pairs**
-  (held-out, full file): ukr 96.9% vs lingua 87.8, mkd 97.4% vs 89.2,
-  srp 98.6% vs 97.0, kaz 98.7% vs 96.1, bul 97.7% vs 95.8, eng 97.7% vs
+  (held-out, full file): ukr 97.6% vs lingua 87.8, mkd 98.4% vs 89.2,
+  srp 98.2% vs 97.0, kaz 98.7% vs 96.1, bul 98.0% vs 95.8, eng 97.7% vs
   96.0, bel at parity (98.8 vs 99.0) — every shared language is at
   parity or ahead, with the wild-heavy classes widest.
 - **whichlang's 98.0% on Russian is real — and the trade is visible:**
   its 16-class world contains no ukr/bel/kaz to confuse with Russian.
-  spellman's rus (93.0%) bleeds into those close classes — and into the
+  spellman's rus (93.9%) bleeds into those close classes — and into the
   small languages whose real wild data now competes — which is precisely
   the capacity that makes the other 20 Cyrillic columns work.
 - **Latency**: whichlang is the fastest per document (tiny 16-class
