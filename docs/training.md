@@ -92,7 +92,7 @@ need new code at all — the generic `hf` adapter is the escape hatch.
 | `opus` | `corpus`, `src`, `tgt`, `lang`, `limit`, `min_chars` | OPUS moses bitexts, latest version via the OPUS API; yields one aligned side |
 | `csv` | `path`, `column`, `lang`, `min_chars` | local CSV/TSV, one text column, single language |
 | `jsonl` | `path`, `min_chars` | pre-labeled `{"lang","text"}` rows — the output side of offline tools (hard negatives, hygiene exports) |
-| `diverse` | `lang`, `pool_repo`+`pool_config`+`pool_docs` or `pool_file`, `budget`, `min_gain`, `expose_top`, `min_exposures`, `min/max_chars`, `max_candidates`, `seed` | lexical-diversity generator: greedy lemma-coverage selection over a pool (any HF repo/config or a built cache file), with an exposure floor for top-vocabulary mass. Pools are shuffled (seeded) so crawl order cannot decide the selection. Lemmatization is a language property resolved via `sources/normalize.py` (pymorphy3 for rus, identity fallback) — adding a language's lemmatizer is one registry entry. Measured: 14k rows from a 1.19M-sentence FineWeb-2 rus pool cover 35k lemmas / 93% of the top-15k, including everyday vocabulary absent from a random sample of twice the size |
+| `diverse` | `lang`, `pool_repo`+`pool_config`+`pool_docs` or `pool_file`, `budget`, `min_gain`, `min_df`, `expose_top`, `min_exposures`, `min_bands`, `min/max_chars`, `max_candidates`, `seed`, `algo`, `norm` (auto) | lexical-diversity generator: first-come lemma-coverage selection over a pool (any HF repo/config, materialized once under cache/, or a built cache file). Lemmas come from the language-keyed normalizer registry (`sources/normalize.py`: pymorphy3 rus/ukr, Stanza bel/bul/srp/kaz/kir, Apertium mkd, corpus prefix-cluster stems for the agglutinative set) and are cached in per-(pool, normalizer) sidecars. Selection (algo=4, the shipped model): seeded shuffle, accept on >=`min_gain` new df>=2 lemmas or starved top-lemma carry, length-stratum budget caps; algo=5/6 add 20-char bands with per-(lemma,band) exposure spread and a variety fill — see `docs/experiments.md` for what each variant measured |
 | `ukr_tweets` | `lang`, `limit`, `min_chars`, `cyr` | saganoren/ukr-twi-corpus, 1.85M raw tweets; Twitter's `lang=="uk"` self-label + Cyrillic gate; proper CSV parsing (tweets embed newlines) |
 | `mn_social` | `lang`, `limit`, `min_chars` | ganaxy/diploma — 10k raw Mongolian news/FB/YouTube comments (`text_raw`) |
 | `kazsandra` | `lang`, `limit`, `min_chars`, `cyr` | IS2AI/KazSAnDRA Kazakh reviews; only the canonical ib/valid/test zips, deduped on `custom_id` (the resampled `*_ros`/`*_rus` zips duplicate rows) |
@@ -263,7 +263,7 @@ texts, Latin-script Tatar short sentences, tgk data thinness.
 
 Every `spellman-mix` run records its exact recipe into
 `<out>/manifest.json` — the current model's recipe is
-`train/data_mix4/manifest.json` (the standing FineWeb-2/Tatoeba/OPUS
+`train/data_mix5/manifest.json` (the standing FineWeb-2/Tatoeba/OPUS
 recipe below plus the wild-UGC, short-utterance and diverse-selection
 sources of
 `train/WILD_UGC_CANDIDATES.md`). The pre-wild standing recipe,
