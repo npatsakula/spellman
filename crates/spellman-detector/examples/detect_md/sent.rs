@@ -130,12 +130,11 @@ pub fn glue_short(pieces: Vec<String>, min_chars: usize) -> Vec<String> {
             && out
                 .last()
                 .is_some_and(|prev| prev.chars().last().is_some_and(is_closer));
-        if is_attribution_tail
-            && let Some(last) = out.last_mut() {
-                last.push(' ');
-                last.push_str(&piece);
-                continue;
-            }
+        if is_attribution_tail && let Some(last) = out.last_mut() {
+            last.push(' ');
+            last.push_str(&piece);
+            continue;
+        }
         out.push(piece);
     }
     out
