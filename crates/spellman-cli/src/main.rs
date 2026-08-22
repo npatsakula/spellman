@@ -22,7 +22,7 @@ use spellman_detector::{BulkDetector, Detection, Lang, SingleDetector};
 /// Model-backed runtime knobs shared by the subcommands.
 #[derive(Args)]
 struct PlanArgs {
-    /// Per-document token budget K; longer documents are truncated.
+    /// Per-document token budget K per plan row; longer documents are scored in full (chunk-accumulated).
     #[arg(long, default_value_t = 1024)]
     k: usize,
     /// Batch size; documents are scored in chunks of this many.

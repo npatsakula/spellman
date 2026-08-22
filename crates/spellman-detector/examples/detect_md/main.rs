@@ -49,7 +49,7 @@ struct Args {
     /// Sentences per detect_batch call.
     #[arg(long, default_value_t = 512)]
     batch: usize,
-    /// Per-document token budget (see BulkDetector::load).
+    /// Per-document token budget per plan row; sentences over it are chunk-accumulated (see BulkDetector).
     #[arg(long, default_value_t = 1024)]
     k: usize,
     /// Beam-optimizer width for plan compilation; 0 = heuristic optimizer.

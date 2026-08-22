@@ -2,6 +2,11 @@
 //! — examples don't run unit tests under `cargo test`, so the module is
 //! pulled in by path. The splitter is sweep policy, deliberately NOT
 //! part of the crate's public detection surface.
+//!
+//! EXPERIMENTATION-ONLY: a crate test reaching into an example's guts
+//! must not ship. When the splitter work settles, either delete this
+//! file or promote the splitter into the crate properly — recorded as a
+//! finish-experiment cleanup in .zcode/CONTEXT.md.
 
 #[path = "../examples/detect_md/sent.rs"]
 mod sent;

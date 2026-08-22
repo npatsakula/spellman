@@ -359,6 +359,93 @@ impl BulkDetector {
                 self.model.metadata.theta,
             );
         }
+
+        // Long documents: a row that filled to K may have tokens beyond
+        // the budget — the execute above scored exactly their first
+        // chunk. The folded score is additive over feature ids, so
+        // accumulating the remaining chunks' outputs gives the exact
+        // untruncated document score: no truncation, no first-K position
+        // bias (a French opening over a Russian body reads all the way
+        // down). Batches where nothing overflows pay one length check.
+        let model = &self.model;
+        let longs: Vec<(usize, Vec<i32>)> = routed
+            .iter()
+            .map(|(slot, _)| *slot)
+            .filter(|&slot| counts[slot].load(Ordering::Relaxed) == k as u32)
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .filter_map(|slot| {
+                let text = row_texts[slot]?;
+                let mut ids = Vec::with_capacity(text.len() / 2 + 8);
+                crate::features::for_each_key(text, &model.features, |key| {
+                    ids.push(model.hasher.signed_index(key, model.log2_d));
+                });
+                (ids.len() > k).then_some((slot, ids))
+            })
+            .collect();
+
+        if !longs.is_empty() {
+            let pad = d as i32;
+            // per-doc accumulators: first-chunk fp16 sums + total count
+            let mut acc: Vec<(usize, Vec<f32>, u32)> = longs
+                .iter()
+                .map(|(slot, ids)| {
+                    let first = &sums_f16[slot * NUM_LANGS..][..NUM_LANGS];
+                    (
+                        *slot,
+                        first.iter().map(|&s| f16_to_f32(s)).collect(),
+                        ids.len() as u32,
+                    )
+                })
+                .collect();
+            // the remaining chunks as a flat row stream, executed in
+            // max_batch-sized rounds
+            let mut rows: Vec<(usize, &[i32])> = Vec::new();
+            for (li, (_, ids)) in longs.iter().enumerate() {
+                for chunk in ids[k..].chunks(k) {
+                    rows.push((li, chunk));
+                }
+            }
+            for group in rows.chunks(self.max_batch) {
+                {
+                    let mut view = self
+                        .jit
+                        .idx_mut()
+                        .context(JitSnafu)?
+                        .as_array_mut::<i32>()
+                        .context(DeviceSnafu)?;
+                    let flat: &mut [i32] = view.as_slice_mut().ok_or_else(|| BulkError::View {
+                        message: "input buffer not contiguous".into(),
+                    })?;
+                    for (ri, (_, chunk)) in group.iter().enumerate() {
+                        let row = &mut flat[ri * k..][..k];
+                        row[..chunk.len()].copy_from_slice(chunk);
+                        for dst in &mut row[chunk.len()..] {
+                            *dst = pad;
+                        }
+                    }
+                }
+                self.jit
+                    .execute_with_vars(&[("b", group.len() as i64)])
+                    .context(JitSnafu)?;
+                let mut group_sums = vec![0u16; group.len() * NUM_LANGS];
+                self.jit
+                    .output()
+                    .context(JitSnafu)?
+                    .copyout_prefix(bytemuck::cast_slice_mut(&mut group_sums))
+                    .context(DeviceSnafu)?;
+                for (ri, (li, _)) in group.iter().enumerate() {
+                    let a = &mut acc[*li].1;
+                    for (x, &s) in a.iter_mut().zip(&group_sums[ri * NUM_LANGS..][..NUM_LANGS]) {
+                        *x += f16_to_f32(s);
+                    }
+                }
+            }
+            for (slot, sums, total) in acc {
+                results[slot] =
+                    pooled_to_detection(&sums, total, &self.model.bias, self.model.metadata.theta);
+            }
+        }
         Ok(results)
     }
 }
@@ -394,12 +481,15 @@ pub fn f16_to_f32(bits: u16) -> f32 {
 /// featurization already computed), bias add, softmax + argmax over the
 /// class axis, and the θ uncertainty flag.
 fn logits_to_detection(sums_f16: &[u16], count: u32, bias: &[f32], theta: f32) -> Detection {
+    let sums: Vec<f32> = sums_f16.iter().map(|&s| f16_to_f32(s)).collect();
+    pooled_to_detection(&sums, count, bias, theta)
+}
+
+/// As [`logits_to_detection`] for f32-accumulated sums (the chunked
+/// long-document path adds per-chunk fp16 plan outputs in f32).
+fn pooled_to_detection(sums: &[f32], count: u32, bias: &[f32], theta: f32) -> Detection {
     let inv = if count > 0 { 1.0 / count as f32 } else { 0.0 };
-    let logits: Vec<f32> = sums_f16
-        .iter()
-        .zip(bias)
-        .map(|(&s, &b)| f16_to_f32(s) * inv + b)
-        .collect();
+    let logits: Vec<f32> = sums.iter().zip(bias).map(|(&s, &b)| s * inv + b).collect();
     let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let exps: Vec<f32> = logits.iter().map(|s| (s - max).exp()).collect();
     let sum: f32 = exps.iter().sum();
@@ -460,7 +550,15 @@ impl SingleDetector {
         Self::load(&dir, k)
     }
 
-    /// Detect the language of one document.
+    /// Detect the language of one document of ANY size.
+    ///
+    /// Documents up to the compile-time token budget K take the fast
+    /// path (one plan execute, unchanged). Longer documents are scored
+    /// in full — no truncation, no position bias — by laying the
+    /// feature ids into K-sized chunks and summing the per-chunk plan
+    /// outputs. The folded model's score is additive over ids, so the
+    /// chunked sum IS the exact untruncated document score (a French
+    /// opening over a Russian body reads all the way down).
     pub fn detect(&mut self, text: &str) -> Result<Detection, BulkError> {
         match crate::route::route(text) {
             crate::route::Route::Direct(lang) => Ok(Detection {
@@ -503,16 +601,64 @@ impl SingleDetector {
                     }
                     count = out as u32;
                 }
-                self.jit.execute().context(JitSnafu)?;
-                let mut sums_f16 = vec![0u16; NUM_LANGS];
-                self.jit
-                    .output()
-                    .context(JitSnafu)?
-                    .copyout_prefix(bytemuck::cast_slice_mut(&mut sums_f16))
-                    .context(DeviceSnafu)?;
-                Ok(logits_to_detection(
-                    &sums_f16,
-                    count,
+                if (count as usize) < k {
+                    // fast path: the whole document fit in one execute
+                    self.jit.execute().context(JitSnafu)?;
+                    let mut sums_f16 = vec![0u16; NUM_LANGS];
+                    self.jit
+                        .output()
+                        .context(JitSnafu)?
+                        .copyout_prefix(bytemuck::cast_slice_mut(&mut sums_f16))
+                        .context(DeviceSnafu)?;
+                    return Ok(logits_to_detection(
+                        &sums_f16,
+                        count,
+                        &self.model.bias,
+                        self.model.metadata.theta,
+                    ));
+                }
+                // the row filled to K: the document may continue past the
+                // budget — featurize it in full (the k-truncation above
+                // dropped nothing a re-scan won't re-emit) and accumulate
+                // exact chunk sums
+                let mut ids: Vec<i32> = Vec::with_capacity(text.len() / 2 + 8);
+                crate::features::for_each_key(text, &model.features, |key| {
+                    ids.push(model.hasher.signed_index(key, model.log2_d));
+                });
+                let total = ids.len() as u32;
+                let mut acc = vec![0f32; NUM_LANGS];
+                for chunk in ids.chunks(k) {
+                    {
+                        let mut view = self
+                            .jit
+                            .idx_mut()
+                            .context(JitSnafu)?
+                            .as_array_mut::<i32>()
+                            .context(DeviceSnafu)?;
+                        let flat: &mut [i32] =
+                            view.as_slice_mut().ok_or_else(|| BulkError::View {
+                                message: "input buffer not contiguous".into(),
+                            })?;
+                        let row = &mut flat[..k];
+                        row[..chunk.len()].copy_from_slice(chunk);
+                        for dst in &mut row[chunk.len()..] {
+                            *dst = d as i32;
+                        }
+                    }
+                    self.jit.execute().context(JitSnafu)?;
+                    let mut sums_f16 = vec![0u16; NUM_LANGS];
+                    self.jit
+                        .output()
+                        .context(JitSnafu)?
+                        .copyout_prefix(bytemuck::cast_slice_mut(&mut sums_f16))
+                        .context(DeviceSnafu)?;
+                    for (a, &s) in acc.iter_mut().zip(&sums_f16) {
+                        *a += f16_to_f32(s);
+                    }
+                }
+                Ok(pooled_to_detection(
+                    &acc,
+                    total,
                     &self.model.bias,
                     self.model.metadata.theta,
                 ))
@@ -573,5 +719,63 @@ mod tests {
         // A smaller batch rebinds `b` on the same plan.
         let res2 = det.detect_batch(&["ещё раз"]).unwrap();
         assert!(res2[0].lang.is_some());
+    }
+
+    #[test]
+    fn single_long_document_scores_exactly() {
+        // The folded score is additive over feature ids, so chunked
+        // scoring at a tiny K must reproduce the untruncated K=8192
+        // detection: same language, same confidence (up to fp16 sum
+        // ordering), same uncertainty. This is the property that makes
+        // detect() size-safe: no truncation, no first-K position bias.
+        let tmp = tempfile::tempdir().unwrap();
+        crate::model::test_support::write_test_model(tmp.path());
+        let long = "Привет, как дела? Это длинный документ для проверки накопления. ".repeat(120);
+
+        let mut chunked = SingleDetector::load(tmp.path(), 16).unwrap();
+        let mut whole = SingleDetector::load(tmp.path(), 8192).unwrap();
+        let a = chunked.detect(&long).unwrap();
+        let b = whole.detect(&long).unwrap();
+
+        assert_eq!(a.lang, b.lang);
+        assert!(
+            (a.confidence - b.confidence).abs() < 1e-3,
+            "chunked {} vs whole {}",
+            a.confidence,
+            b.confidence
+        );
+        assert_eq!(a.is_uncertain, b.is_uncertain);
+
+        // a document that fits in K keeps the one-execute fast path
+        let mut short_k = SingleDetector::load(tmp.path(), 8192).unwrap();
+        let c = short_k.detect("Привет, как дела?").unwrap();
+        assert!(c.lang.is_some());
+    }
+
+    #[test]
+    fn bulk_long_documents_score_exactly() {
+        // Batch of long documents with a tiny K and a tiny max_batch:
+        // the remainder-chunk row stream spans multiple execute rounds,
+        // and every result must still equal the untruncated score.
+        let tmp = tempfile::tempdir().unwrap();
+        crate::model::test_support::write_test_model(tmp.path());
+        let long = "Привет, как дела? Это длинный документ для проверки накопления. ".repeat(120);
+
+        let mut det = BulkDetector::load(tmp.path(), 16, 8).unwrap();
+        let texts = [long.as_str(), long.as_str(), "короткий текст"];
+        let res = det.detect_batch(&texts).unwrap();
+
+        let mut whole = SingleDetector::load(tmp.path(), 8192).unwrap();
+        let reference = whole.detect(&long).unwrap();
+        for r in &res[..2] {
+            assert_eq!(r.lang, reference.lang);
+            assert!(
+                (r.confidence - reference.confidence).abs() < 1e-3,
+                "chunked {} vs whole {}",
+                r.confidence,
+                reference.confidence
+            );
+        }
+        assert!(res[2].lang.is_some());
     }
 }
