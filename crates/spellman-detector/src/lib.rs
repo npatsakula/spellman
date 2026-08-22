@@ -31,7 +31,6 @@ pub mod hub;
 pub mod jit;
 pub mod model;
 pub mod route;
-pub mod sent;
 
 pub use jit::{BulkDetector, SingleDetector};
 pub use route::{Route, ScriptGroup};

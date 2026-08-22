@@ -32,6 +32,8 @@ use svod_tensor::PrepareConfig;
 
 use spellman_detector::{BulkDetector, Detection};
 
+mod sent;
+
 #[derive(Parser)]
 struct Args {
     /// Model directory (model.json + model.safetensors); omitted = the
@@ -61,14 +63,24 @@ struct Args {
 /// Split markdown text into sentences: heading lines are skipped, each
 /// remaining paragraph line is segmented with `sent::split_line`
 /// (terminator runs + closers + initials + decimals + dialogue dashes —
-/// see the module docs). Letter/min-length filtering happens in `main`;
-/// the fragments it drops cost nothing.
-fn split_sentences(md: &str) -> Vec<String> {
+/// see the module docs) and sub-`min_chars` fragments are glued into a
+/// neighbor (`sent::glue_short`), so attribution tails rejoin their
+/// sentence instead of becoming weak standalone units. Letter/min-length
+/// filtering happens in `main`; what it still drops (isolated short
+/// lines) costs nothing.
+fn split_sentences(md: &str, min_chars: usize) -> Vec<String> {
     md.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .flat_map(spellman_detector::sent::split_line)
-        .map(str::to_string)
+        .flat_map(|line| {
+            sent::glue_short(
+                sent::split_line(line)
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                min_chars,
+            )
+        })
         .collect()
 }
 
@@ -119,7 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let md = std::fs::read_to_string(&args.md)?;
-    let sentences: Vec<String> = split_sentences(&md)
+    let sentences: Vec<String> = split_sentences(&md, args.min_chars)
         .into_iter()
         .filter(|s| s.chars().count() >= args.min_chars && s.chars().any(char::is_alphabetic))
         .collect();
