@@ -3,7 +3,7 @@
 This module is the shared contract between training (Python) and inference
 (Rust). Any change to the packing, hashing, or bucket extraction must be made
 in BOTH implementations and validated against ``fixtures/hash_vectors.json``
-(``uv run spellman-gen-fixtures`` regenerates it; ``cargo test`` verifies it).
+(``uv run spellman-train gen-fixtures`` regenerates it; ``cargo test`` verifies it).
 
 Parity notes:
 - Lowercasing uses ``str.lower()``; Rust uses per-``char`` ``to_lowercase()``.

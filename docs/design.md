@@ -50,7 +50,7 @@ group's slice of the folded table.
 ## Feature pipeline
 
 Implemented in `crates/spellman-detector/src/features.rs`, mirrored
-bit-for-bit in `train/spellman_features.py` (see
+bit-for-bit in `spellman_train/features.py` (see
 [parity contract](#the-rustpython-parity-contract)). Pipeline per document:
 
 ```
@@ -310,10 +310,11 @@ marker lands on the execution path (60× single-doc, measured).
 ## The Rust↔Python parity contract
 
 The feature pipeline exists twice — Rust runtime, Python training — and
-every trained model is invalid if they drift. `train/spellman_features.py`
+every trained model is invalid if they drift.
+`spellman_train/features.py`
 mirrors `features.rs`/`hash.rs` bit-for-bit, including a numpy-vectorized
 batch path (`bucket_tokens_flat`) asserted bit-identical to the scalar
-reference. `uv run spellman-gen-fixtures` regenerates
+reference. `uv run spellman-train gen-fixtures` regenerates
 `crates/spellman-detector/fixtures/hash_vectors.json` from the Python side;
 `cargo test` verifies the Rust side against it. Both implementations were
 written from the same spec; the fixture is the arbiter.

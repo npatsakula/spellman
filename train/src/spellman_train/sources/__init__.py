@@ -3,12 +3,12 @@
 Adding a new dataset = one module in this package with a class that:
   1. subclasses :class:`Dataset`,
   2. declares its options as dataclass fields (they become the
-     `--source name:key=value` knobs of `spellman-mix`), and
+     `--source name:key=value` knobs of `spellman-train mix`), and
   3. implements :meth:`Dataset.samples` yielding `(lang_code, text)` pairs.
 
 Register it with ``@register("name")`` and it is immediately mixable:
 
-    uv run spellman-mix --out data_mix \\
+    uv run spellman-train mix --out data_mix \\
         --source fineweb2:docs_per_lang=600,per_doc=4 \\
         --source tatoeba:train_per_lang=8000 \\
         --source my_new_dataset
@@ -27,10 +27,23 @@ from dataclasses import asdict, fields, is_dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Type
 
-TRAIN_DIR = Path(__file__).parent.parent
-CACHE_DIR = TRAIN_DIR / "cache"
+from spellman_train.paths import CACHE_DIR, TRAIN_DIR
 
 _REGISTRY: dict[str, type[Dataset]] = {}
+
+
+def ensure_adapters() -> None:
+    """Import every adapter module so its @register decorators run.
+
+    Replaces the hand-maintained import list that used to live in the mixer:
+    a new adapter module in this package is mixable the moment it exists.
+    Idempotent — Python caches modules in sys.modules.
+    """
+    import importlib
+    import pkgutil
+
+    for mod in pkgutil.iter_modules(__path__):
+        importlib.import_module(f"{__name__}.{mod.name}")
 
 
 def register(name: str) -> Callable[[type[Dataset]], type[Dataset]]:
@@ -43,6 +56,7 @@ def register(name: str) -> Callable[[type[Dataset]], type[Dataset]]:
 
 def create(name: str, **opts) -> Dataset:
     """Instantiate a registered adapter from mix-source options."""
+    ensure_adapters()
     cls = _REGISTRY.get(name)
     if cls is None:
         known = ", ".join(sorted(_REGISTRY))
@@ -55,6 +69,7 @@ def create(name: str, **opts) -> Dataset:
 
 
 def registered() -> list[str]:
+    ensure_adapters()
     return sorted(_REGISTRY)
 
 

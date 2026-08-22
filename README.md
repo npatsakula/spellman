@@ -163,9 +163,13 @@ chi²/dof ≈ 1.006 (uniform ≈ 1.0).
 | FineWeb-2 `_removed` subsets | 12 configs | model-labeled hard negatives (twin-protected) |
 
 All sources flow through the pluggable adapter registry
-(`train/sources/`), are hygiene-audited (twin-protected judges, ~1.3k
+(`spellman_train/sources/`), are hygiene-audited (twin-protected judges, ~1.3k
 foreign rows removed), and mixed with deterministic crc32 splits —
-details in the [training guide](docs/training.md).
+details in the [training guide](docs/training.md). The exact promoted mix
+(v11c) is published as parquet at
+[vpermilp/spellman](https://huggingface.co/datasets/vpermilp/spellman)
+(1,535,170 rows; same repo name as the model, dataset repo type), with the
+byte-exact recipe in its `manifest.json`.
 
 ## Quick start
 

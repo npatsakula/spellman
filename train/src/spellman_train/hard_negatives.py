@@ -16,7 +16,7 @@ qualify are dropped: hard negatives must be unambiguous.
 Output: one cache-style JSONL ({"lang","text"}) consumed via the `jsonl`
 source, e.g.  --source jsonl:path=hard_negatives.jsonl
 
-Usage: uv run python hard_negatives.py [--conf 0.98] [--per-lang 4000]
+Usage: uv run spellman-train hard-negatives [--conf 0.98] [--per-lang 4000]
 """
 
 from __future__ import annotations
@@ -26,9 +26,10 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from spellman_features import LANGUAGES
-from hygiene import load_judge, predict_batch
-from sources.fineweb2 import windows_from_doc
+from spellman_train.features import LANGUAGES
+from spellman_train.hygiene import load_judge, predict_batch
+from spellman_train.paths import CACHE_DIR, MODEL_DIR
+from spellman_train.sources.fineweb2 import windows_from_doc
 
 # Languages whose removed subsets target our residual rus-attraction
 # confusions (top confusion pairs from the last error audit).
@@ -50,17 +51,17 @@ def twin_protected(gold: str, pred: str) -> bool:
     return any(gold in g and pred in g for g in TWIN_GROUPS)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", type=Path, default=Path(__file__).parent.parent / "model")
-    parser.add_argument("--out", type=Path, default=Path(__file__).parent / "cache" / "hard_negatives.jsonl")
-    parser.add_argument("--conf", type=float, default=0.98)
-    parser.add_argument("--per-lang", type=int, default=4000, help="kept windows per source config")
-    parser.add_argument("--docs", type=int, default=6000, help="removed docs to stream per config")
-    parser.add_argument("--per-doc", type=int, default=2)
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
+def populate(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--model", type=Path, default=MODEL_DIR)
+    ap.add_argument("--out", type=Path, default=CACHE_DIR / "hard_negatives.jsonl")
+    ap.add_argument("--conf", type=float, default=0.98)
+    ap.add_argument("--per-lang", type=int, default=4000, help="kept windows per source config")
+    ap.add_argument("--docs", type=int, default=6000, help="removed docs to stream per config")
+    ap.add_argument("--per-doc", type=int, default=2)
+    ap.add_argument("--seed", type=int, default=42)
 
+
+def run(args: argparse.Namespace) -> None:
     from datasets import load_dataset
 
     P, bias, log2_d, seed, hash_id = load_judge(args.model)
@@ -114,6 +115,12 @@ def main() -> None:
         for lang, text in kept:
             f.write(json.dumps({"lang": lang, "text": text}, ensure_ascii=False) + "\n")
     print(f"wrote {len(kept)} hard negatives -> {args.out}; labels: {dict(stats.most_common(8))}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="spellman-train hard-negatives", description=__doc__)
+    populate(ap)
+    run(ap.parse_args(argv))
 
 
 if __name__ == "__main__":

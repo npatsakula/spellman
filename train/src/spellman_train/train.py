@@ -6,8 +6,8 @@ Because the head is linear, E·W collapses to a single [D+1, C] table `P`
 (zero row D for padding) — the exported `model.json` + `model.safetensors`
 that both the Rust CPU path and the svod JIT path consume.
 
-Usage (from train/):
-    uv run spellman-train --data data --out ../model --hash-id fmix32
+Usage:
+    uv run spellman-train train --data data_mix5 --out ../model --hash-id fmix32
 
 Hash A/B: run with --hash-id {fmix32,murmur2,multiply_shift} and compare
 val accuracies; --hash-stats prints a chi-square uniformity check of the
@@ -27,14 +27,15 @@ from safetensors.numpy import save_file
 from torch import nn
 from tqdm import tqdm
 
-from spellman_features import (
+from spellman_train.features import (
     DEFAULT_SEED,
     LANGUAGES,
     bucket_of,
     bucket_tokens_flat,
     token_keys,
 )
-from quantize import dequantize, parse_store, quantize, stats
+from spellman_train.paths import MODEL_DIR, TRAIN_DIR
+from spellman_train.quantize import dequantize, parse_store, quantize, stats
 
 
 LANG_TO_IDX = {code: i for i, code in enumerate(LANGUAGES)}
@@ -51,6 +52,19 @@ class Config:
     k: int = 256  # max tokens per sample during training
     lr: float = 0.02
     per_lang_cap: int = 50_000
+
+def load_split(data_dir: Path, split: str) -> list[dict]:
+    """Read one split of a mix: parquet shard if present, else legacy jsonl.
+
+    Both carry the same {"lang","text"} schema; rows come back as dicts so
+    the training code is agnostic of the on-disk format."""
+    import polars as pl
+
+    parquet = data_dir / "data" / f"{split}-00000-of-00001.parquet"
+    if parquet.exists():
+        return pl.read_parquet(parquet).to_dicts()
+    return load_jsonl(data_dir / f"{split}.jsonl")
+
 
 def load_jsonl(path: Path) -> list[dict]:
     with path.open(encoding="utf-8") as f:
@@ -261,43 +275,43 @@ def write_eval_tsv(rows: list[dict], path: Path) -> None:
             f.write(f"{row['lang']}\t{text}\n")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", type=Path, default=Path(__file__).parent / "data")
-    parser.add_argument("--out", type=Path, default=Path(__file__).parent.parent / "model")
-    parser.add_argument("--log2-d", type=int, default=17)
-    parser.add_argument("--hash-id", choices=["fmix32", "murmur2", "multiply_shift"], default="fmix32")
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--dim", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--k", type=int, default=256)
-    parser.add_argument("--lr", type=float, default=0.02)
-    parser.add_argument("--per-lang-cap", type=int, default=50_000)
-    parser.add_argument("--hash-stats", action="store_true")
-    parser.add_argument("--device", default="cpu")
-    parser.add_argument(
+def populate(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--data", type=Path, default=TRAIN_DIR / "data")
+    ap.add_argument("--out", type=Path, default=MODEL_DIR)
+    ap.add_argument("--log2-d", type=int, default=17)
+    ap.add_argument("--hash-id", choices=["fmix32", "murmur2", "multiply_shift"], default="fmix32")
+    ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    ap.add_argument("--dim", type=int, default=128)
+    ap.add_argument("--epochs", type=int, default=3)
+    ap.add_argument("--batch-size", type=int, default=256)
+    ap.add_argument("--k", type=int, default=256)
+    ap.add_argument("--lr", type=float, default=0.02)
+    ap.add_argument("--per-lang-cap", type=int, default=50_000)
+    ap.add_argument("--hash-stats", action="store_true")
+    ap.add_argument("--device", default="cpu")
+    ap.add_argument(
         "--compile",
         action="store_true",
         help="torch.compile the net (measured on M1 Pro: 33.7 ms/step cpu -> "
         "10.5 ms/step mps+compile, ~3.2x; warmup ~1s, two extra recompiles "
         "for the partial eval batches)",
     )
-    parser.add_argument(
+    ap.add_argument(
         "--store",
         default="f16",
         choices=["f16", "int8-row", "int8-col", "fp8-row", "fp8-col"],
         help="folded-table storage format (int8/fp8 halve the artifact; the "
         "loader dequantizes, the runtime graph is unchanged)",
     )
-    parser.add_argument(
+    ap.add_argument(
         "--quant-max-drop",
         type=float,
         default=0.2,
         help="max tolerated validation-accuracy drop (percentage points) for quantized --store",
     )
-    args = parser.parse_args()
 
+
+def run(args: argparse.Namespace) -> None:
     cfg = Config(
         log2_d=args.log2_d,
         hash_id=args.hash_id,
@@ -310,9 +324,9 @@ def main() -> None:
         per_lang_cap=args.per_lang_cap,
     )
 
-    train_rows = load_jsonl(args.data / "train.jsonl")
-    val_rows = load_jsonl(args.data / "val.jsonl")
-    test_rows = load_jsonl(args.data / "test.jsonl")
+    train_rows = load_split(args.data, "train")
+    val_rows = load_split(args.data, "val")
+    test_rows = load_split(args.data, "test")
     print(f"loaded {len(train_rows)} train / {len(val_rows)} val / {len(test_rows)} test", flush=True)
 
     if args.hash_stats:
@@ -362,6 +376,12 @@ def main() -> None:
     write_eval_tsv(test_rows, args.out / "eval_test.tsv")
     write_eval_tsv(val_rows, args.out / "eval_val.tsv")
     print("wrote eval_test.tsv / eval_val.tsv (feed to `cargo run --release --bin assess`)")
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="spellman-train train", description=__doc__)
+    populate(ap)
+    run(ap.parse_args(argv))
 
 
 if __name__ == "__main__":

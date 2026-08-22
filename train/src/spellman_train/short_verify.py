@@ -17,7 +17,7 @@ For EVAL referees use --min-agree 2 --no-spellman: the file a model is
 scored on must not have been filtered through that model's own opinions.
 
 Usage:
-    uv run python short_verify.py cache/ukr_tweets-<hash>.jsonl [...]
+    uv run spellman-train short-verify cache/ukr_tweets-<hash>.jsonl [...]
 """
 
 from __future__ import annotations
@@ -30,9 +30,10 @@ from pathlib import Path
 
 import numpy as np
 
-from eval_fasttext import GLOTLID_CANDIDATES, LID176_CANDIDATES
-from hygiene import load_judge
-from spellman_features import LANGUAGES, bucket_tokens_flat
+from spellman_train.eval_fasttext import GLOTLID_CANDIDATES, LID176_CANDIDATES
+from spellman_train.hygiene import load_judge
+from spellman_train.features import LANGUAGES, bucket_tokens_flat
+from spellman_train.paths import CACHE_DIR, MODEL_DIR
 
 _HANDLE = re.compile(r"@\w+")
 _URL = re.compile(r"https?://\S+|\bwww\.\S+")
@@ -70,17 +71,17 @@ def spellman_votes(
     return out
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("caches", nargs="+", type=Path)
-    parser.add_argument("--model", type=Path, default=Path(__file__).parent.parent / "model")
-    parser.add_argument("--min-agree", type=int, default=2)
-    parser.add_argument("--no-spellman", action="store_true",
-                        help="external judges only (for eval referees)")
-    parser.add_argument("--glotlid", type=Path, default=Path(__file__).parent / "cache" / "raw" / "model.bin")
-    parser.add_argument("--lid176", type=Path, default=Path(__file__).parent / "cache" / "lid.176.bin")
-    args = parser.parse_args()
+def populate(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("caches", nargs="+", type=Path)
+    ap.add_argument("--model", type=Path, default=MODEL_DIR)
+    ap.add_argument("--min-agree", type=int, default=2)
+    ap.add_argument("--no-spellman", action="store_true",
+                    help="external judges only (for eval referees)")
+    ap.add_argument("--glotlid", type=Path, default=CACHE_DIR / "raw" / "model.bin")
+    ap.add_argument("--lid176", type=Path, default=CACHE_DIR / "lid.176.bin")
 
+
+def run(args: argparse.Namespace) -> None:
     import fasttext
 
     glot = fasttext.load_model(str(args.glotlid))
@@ -120,6 +121,12 @@ def main() -> None:
         audit.write_text("\n".join(audit_lines) + ("\n" if audit_lines else ""), encoding="utf-8")
         print(f"{cache.name}: kept {len(kept)}/{len(rows)} (min-agree {args.min_agree}"
               f"{', external-only' if args.no_spellman else ''}); dropped {dict(dropped_by_lang)}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="spellman-train short-verify", description=__doc__)
+    populate(ap)
+    run(ap.parse_args(argv))
 
 
 if __name__ == "__main__":

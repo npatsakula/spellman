@@ -11,8 +11,9 @@ target/
 .DS_Store
 
 # data pipeline: downloads, caches, generated mixes — all rebuildable
+# (mix splits are also published to the HF dataset repo)
 train/cache/
-train/data_mix/
+train/data*/
 train/tatoeba/
 train/.venv/
 __pycache__/
@@ -20,9 +21,6 @@ __pycache__/
 *.tar.bz2
 
 # trained-model artifacts: published on Hugging Face, or produced locally
-# by train/spellman-train — never tracked
+# by spellman-train train — never tracked
 /model/
 /model-*/
-data_mix2/*.jsonl
-data_mix3/*.jsonl
-data_mix4/*.jsonl

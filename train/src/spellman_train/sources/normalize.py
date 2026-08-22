@@ -28,7 +28,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
-TRAIN_DIR = Path(__file__).parent.parent
+from spellman_train.paths import TRAIN_DIR
 
 #: lang -> builder name (the single extension point). The string is part
 #: of the diverse cache fingerprint: bump/rename a value whenever its
@@ -264,7 +264,7 @@ def _build_apertium(lang: str) -> Callable[[list[str]], list[str]]:
     if not bin_path.exists():
         raise SystemExit(
             f"apertium analyzer for {lang} missing ({bin_path}); "
-            "run: uv run python prepare_apertium.py"
+            "run: uv run spellman-train prepare-apertium"
         )
     env = {**os.environ, "DYLD_LIBRARY_PATH": str(ltt / "lib")}
     cache: dict[str, str] = {}

@@ -1,7 +1,7 @@
 """Mix training data from any combination of pluggable dataset sources.
 
 Each ``--source name:key=value,...`` is resolved through the source registry
-(``train/sources/``), replayed from cache when options are unchanged, then
+(``spellman_train.sources``), replayed from cache when options are unchanged, then
 merged, split, augmented, capped and written. The pipeline splits its labor
 between Polars (columnar bulk work) and Python's ``random`` (the stages whose
 exact RNG streams are part of the data contract):
@@ -23,16 +23,21 @@ exact RNG streams are part of the data contract):
 5. **Cap + shuffle + write** — ``--cap-per-lang`` subsampling and the row
    shuffle reproduce the historical ``random.Random(seed)`` consumption
    order exactly (fresh RNG per capped language, one shared RNG across
-   train/val/test shuffles), then the ordered rows go out through
-   ``DataFrame.write_ndjson`` (UTF-8, non-ASCII unescaped).
+   train/val/test shuffles), then the ordered rows are written as parquet
+   shards (``<out>/data/{split}-00000-of-00001.parquet``, zstd — the
+   HF-dataset-native format; ``--format jsonl`` restores the flat
+   ``{split}.jsonl`` layout of older mixes).
 
-Usage (from train/):
-    uv run spellman-mix --out data_mix \\
+Usage:
+    uv run spellman-train mix --out data_mix \\
         --source fineweb2:docs_per_lang=600,per_doc=4 \\
         --source tatoeba:train_per_lang=8000
 
+Replay a recorded recipe (see manifest.json) into a fresh directory:
+    uv run spellman-train mix --from-manifest data_mix5/manifest.json --out data/v11c
+
 List registered sources:
-    uv run spellman-mix --list
+    uv run spellman-train mix --list
 """
 
 from __future__ import annotations
@@ -46,8 +51,9 @@ from pathlib import Path
 
 import polars as pl
 
-import sources
-from sources import parse_source, registered
+from spellman_train import sources
+from spellman_train.paths import TRAIN_DIR
+from spellman_train.sources import parse_source, registered
 
 
 def split_of(lang: str, text: str) -> str:
@@ -224,7 +230,6 @@ def _prewarm_worker(spec: str) -> tuple[str, int]:
     replays them warm through its normal single-process path, keeping
     dedup order and RNG streams byte-identical to a sequential build.
     """
-    from sources import diverse, fineweb2, gutenberg, hf, leipzig, local, opus, tatoeba, ugc, wikisource  # noqa: F401,E401,F403
 
     name, opts = parse_source(spec)
     ds = sources.create(name, **opts)
@@ -241,7 +246,6 @@ def prebuild_colds(specs: list[str], jobs: int) -> None:
     """
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    from sources import diverse, fineweb2, gutenberg, hf, leipzig, local, opus, tatoeba, ugc, wikisource  # noqa: F401,E401,F403
 
     cold: list[str] = []
     for spec in specs:
@@ -264,26 +268,72 @@ def prebuild_colds(specs: list[str], jobs: int) -> None:
             raise
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", type=Path, default=Path(__file__).parent / "data_mix")
-    parser.add_argument("--source", action="append", default=[], metavar="NAME[:K=V,...]")
-    parser.add_argument("--seed", type=int, default=42, help="row shuffle seed (splits are content-deterministic)")
-    parser.add_argument(
+def _replay_argv(argv: list[str]) -> list[str]:
+    """Expand ``--from-manifest PATH`` in a live argv into the recorded recipe.
+
+    The manifest's ``argv`` is the exact original invocation (source order is
+    part of the recipe — dedup is first-source-wins); its ``--out`` pair is
+    dropped so the live ``--out`` (or the default) decides the destination.
+    Live tokens append after the recorded ones, so live flags override
+    recorded scalars while ``--source`` appends.
+    """
+    manifest_path: str | None = None
+    pending_value = False
+    live: list[str] = []
+    for tok in argv:
+        if pending_value:
+            manifest_path = tok
+            pending_value = False
+            continue
+        if tok == "--from-manifest":
+            pending_value = True
+            continue
+        if tok.startswith("--from-manifest="):
+            manifest_path = tok.split("=", 1)[1]
+            continue
+        live.append(tok)
+    if manifest_path is None:
+        raise SystemExit("--from-manifest requires a path")
+    recorded = json.loads(Path(manifest_path).read_text(encoding="utf-8"))["argv"]
+    out: list[str] = []
+    skip_value = False
+    for tok in recorded:
+        if skip_value:
+            skip_value = False
+            continue
+        if tok == "--out":
+            skip_value = True
+            continue
+        out.append(tok)
+    return out + live
+
+
+def expand_argv(argv: list[str]) -> list[str]:
+    """Pre-parse hook: expand --from-manifest (see _replay_argv)."""
+    if any(a == "--from-manifest" or a.startswith("--from-manifest=") for a in argv):
+        return _replay_argv(argv)
+    return argv
+
+
+def populate(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--out", type=Path, default=TRAIN_DIR / "data_mix")
+    ap.add_argument("--source", action="append", default=[], metavar="NAME[:K=V,...]")
+    ap.add_argument("--seed", type=int, default=42, help="row shuffle seed (splits are content-deterministic)")
+    ap.add_argument(
         "--cap-per-lang",
         type=int,
         default=None,
         help="cap each language's rows per split (seeded subsample) so one "
         "dominant source cannot skew the val/test aggregates",
     )
-    parser.add_argument(
+    ap.add_argument(
         "--wild-augment",
         type=float,
         default=0.0,
         help="probability per row of also emitting an internet-noised copy "
         "(URLs, mentions, emoji, casing chaos, elongation, loans) in the same split",
     )
-    parser.add_argument(
+    ap.add_argument(
         "--short-floor",
         type=float,
         default=0.0,
@@ -291,23 +341,36 @@ def main() -> None:
         "language's sample is genuinely-short rows (<=19 chars, the wild "
         "short lane); languages without enough short rows backfill with long",
     )
-    parser.add_argument(
+    ap.add_argument(
         "--short-augment",
         type=float,
         default=0.0,
         help="probability per row of also emitting a random 1-3-word fragment "
         "in the same split (short-text regime training)",
     )
-    parser.add_argument("--jobs", type=int, default=1,
-                        help="build cold source caches in N parallel processes before mixing "
-                             "(warm caches are skipped; RAM-bound: 3-4 is the ceiling on 16GB "
-                             "because big diverse pools hold GBs each)")
-    parser.add_argument("--list", action="store_true", help="list registered sources and exit")
-    args = parser.parse_args()
+    ap.add_argument(
+        "--format",
+        choices=("parquet", "jsonl"),
+        default="parquet",
+        help="dataset layout: parquet shards under <out>/data/ (default, HF-uploadable) "
+        "or the legacy flat <out>/{split}.jsonl",
+    )
+    ap.add_argument(
+        "--from-manifest",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="replay the recipe recorded in a previous mix's manifest.json "
+        "(live --out/--format override; live --source appends)",
+    )
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="build cold source caches in N parallel processes before mixing "
+                         "(warm caches are skipped; RAM-bound: 3-4 is the ceiling on 16GB "
+                         "because big diverse pools hold GBs each)")
+    ap.add_argument("--list", action="store_true", help="list registered sources and exit")
 
-    # Import adapters for their registration side effects.
-    from sources import diverse, fineweb2, gutenberg, hf, leipzig, local, opus, tatoeba, ugc, wikisource  # noqa: F401,E401
 
+def run(args: argparse.Namespace) -> None:
     if args.list:
         for name in registered():
             print(name)
@@ -357,6 +420,7 @@ def main() -> None:
     # handed back to Polars for the write.
     rng = random.Random(args.seed)
     args.out.mkdir(parents=True, exist_ok=True)
+    split_counts: dict[str, int] = {}
     for split, rows in splits.items():
         if args.cap_per_lang is not None:
             by_lang: dict[str, list[tuple[str, str]]] = {}
@@ -372,28 +436,50 @@ def main() -> None:
                 )
             ]
         rng.shuffle(rows)
-        path = args.out / f"{split}.jsonl"
-        pl.DataFrame(
+        split_counts[split] = len(rows)
+        frame = pl.DataFrame(
             {"lang": [r[0] for r in rows], "text": [r[1] for r in rows]},
             schema={"lang": pl.String, "text": pl.String},
-        ).write_ndjson(path)
+        )
+        if args.format == "parquet":
+            # One shard per split today (~10^6 rows); the -00000-of-00001
+            # suffix keeps the HF data_files glob stable if a split ever
+            # outgrows a single file and gets re-sharded.
+            path = args.out / "data" / f"{split}-00000-of-00001.parquet"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_parquet(path, compression="zstd")
+        else:
+            path = args.out / f"{split}.jsonl"
+            frame.write_ndjson(path)
         print(f"{split}: {len(rows)} -> {path}")
 
     # The mix recipe is data: record it so a model directory can always be
     # traced back to its exact sources and knobs (source order matters —
-    # dedup is first-source-wins).
+    # dedup is first-source-wins). argv excludes any CLI subcommand so a
+    # replay via --from-manifest works from any invocation style.
     manifest = {
-        "argv": sys.argv[1:],
+        "argv": getattr(args, "_argv", sys.argv[1:]),
         "seed": args.seed,
         "cap_per_lang": args.cap_per_lang,
         "wild_augment": args.wild_augment,
         "short_augment": args.short_augment,
         "short_floor": args.short_floor,
+        "format": args.format,
+        "splits": split_counts,
         "sources": [list(parse_source(spec)) for spec in args.source],
     }
     (args.out / "manifest.json").write_text(
         json.dumps(manifest, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
     )
+
+
+def main(argv: list[str] | None = None) -> None:
+    argv = expand_argv(list(sys.argv[1:] if argv is None else argv))
+    ap = argparse.ArgumentParser(prog="spellman-train mix", description=__doc__)
+    populate(ap)
+    args = ap.parse_args(argv)
+    args._argv = argv
+    run(args)
 
 
 if __name__ == "__main__":

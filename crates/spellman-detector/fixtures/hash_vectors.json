@@ -1,5 +1,5 @@
 {
- "note": "Rust↔Python feature parity contract; regenerate with uv run spellman-gen-fixtures",
+ "note": "Rust↔Python feature parity contract; regenerate with uv run spellman-train gen-fixtures",
  "cases": [
   {
    "text": "Съешь ещё этих мягких французских булок, да выпей чаю",

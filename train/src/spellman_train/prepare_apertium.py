@@ -14,7 +14,7 @@ them usable offline:
 
 Everything lands under gitignored ``cache/`` so re-running this script
 reproduces the analyzers from source. Registered languages live in
-``sources/normalize.py`` as ``apertium:<lang>``.
+``spellman_train/sources/normalize.py`` as ``apertium:<lang>``.
 """
 
 from __future__ import annotations
@@ -25,8 +25,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-TRAIN_DIR = Path(__file__).parent
-APERTIUM_DIR = TRAIN_DIR / "cache" / "apertium"
+from spellman_train.paths import CACHE_DIR
+
+APERTIUM_DIR = CACHE_DIR / "apertium"
 
 #: lang -> (repo, monodix, acx or None). Only mkd: the other Apertium
 # minority-language repos are either HFST .lexc (not lttoolbox) or stubs
@@ -89,11 +90,12 @@ def build_lang(lang: str, prefix: Path) -> Path:
     return out
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lang", action="append", default=[],
-                        help="build only these languages (default: all)")
-    args = parser.parse_args()
+def populate(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--lang", action="append", default=[],
+                    help="build only these languages (default: all)")
+
+
+def run(args: argparse.Namespace) -> None:
     targets = args.lang or list(LANGS)
     bad = set(targets) - set(LANGS)
     if bad:
@@ -102,6 +104,12 @@ def main() -> None:
     for lang in targets:
         build_lang(lang, prefix)
     print("done")
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="spellman-train prepare-apertium", description=__doc__)
+    populate(ap)
+    run(ap.parse_args(argv))
 
 
 if __name__ == "__main__":

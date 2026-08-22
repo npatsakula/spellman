@@ -33,7 +33,8 @@ import numpy as np
 import polars as pl
 from safetensors.numpy import load_file
 
-from spellman_features import LANGUAGES, bucket_tokens_flat
+from spellman_train.features import LANGUAGES, bucket_tokens_flat
+from spellman_train.paths import CACHE_DIR, MODEL_DIR
 
 MIN_TOKENS = 8  # ultra-short rows carry too little signal to judge by
 
@@ -109,22 +110,22 @@ def _predict_chunk(texts, P, bias, log2_d, seed, hash_id) -> list[tuple[int, flo
     return [(int(t), float(c)) for t, c in zip(top, conf)]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("caches", nargs="+", type=Path)
-    parser.add_argument("--model", type=Path, default=Path(__file__).parent.parent / "model")
-    parser.add_argument("--conf", type=float, default=0.995)
-    parser.add_argument("--only-lang", default=None, help="clean only rows with this gold label")
-    parser.add_argument("--script", action="store_true", help="also apply the cross-script rule (see module docstring)")
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+def populate(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("caches", nargs="+", type=Path)
+    ap.add_argument("--model", type=Path, default=MODEL_DIR)
+    ap.add_argument("--conf", type=float, default=0.995)
+    ap.add_argument("--only-lang", default=None, help="clean only rows with this gold label")
+    ap.add_argument("--script", action="store_true", help="also apply the cross-script rule (see module docstring)")
+    ap.add_argument("--dry-run", action="store_true")
 
+
+def run(args: argparse.Namespace) -> None:
     P, bias, log2_d, seed, hash_id = load_judge(args.model)
     ft = None
     if args.script:
         import fasttext
 
-        ft = fasttext.load_model(str(Path(__file__).parent / "cache" / "lid.176.bin"))
+        ft = fasttext.load_model(str(CACHE_DIR / "lid.176.bin"))
 
     def in_scope(lang: str) -> bool:
         return args.only_lang is None or lang == args.only_lang
@@ -184,6 +185,12 @@ def main() -> None:
             tmp = cache.with_suffix(".jsonl.tmp")
             df.filter(np.asarray(keep_mask)).write_ndjson(tmp)
             tmp.replace(cache)
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="spellman-train clean", description=__doc__)
+    populate(ap)
+    run(ap.parse_args(argv))
 
 
 if __name__ == "__main__":

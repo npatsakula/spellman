@@ -71,12 +71,12 @@ hf download cardiffnlp/tweet_sentiment_multilingual --repo-type dataset
 ## Wired source specs (2026-08-17)
 
 Adapters: `hf` gained raw mode + row gates (`raw,min_chars,max_chars,where,files,cyr,drop_cjk,split`),
-`leipzig` gained `cyr`; new `train/sources/ugc.py` (`ukr_tweets`, `mn_social`, `kazsandra`).
+`leipzig` gained `cyr`; new `spellman_train/sources/ugc.py` (`ukr_tweets`, `mn_social`, `kazsandra`).
 Every spec below is cached under `cache/<name>-<hash>.jsonl` and verified against the
 VALIDATION.md counts:
 
 ```bash
-uv run spellman-mix --out <mix_dir> \
+uv run spellman-train mix --out <mix_dir> \
   --source ukr_tweets:limit=400000 \
   --source mn_social \
   --source kazsandra \

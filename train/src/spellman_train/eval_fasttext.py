@@ -8,7 +8,7 @@ unsupported gold languages are excluded so the rungs are comparable to
 fastText's own published methodology.
 
 Usage (fasttext-numpy2 build — runs in the main env):
-    uv run python eval_fasttext.py \
+    uv run spellman-train eval-fasttext \
         ../model/eval_test.tsv tatoeba_eval.tsv
 """
 
@@ -21,8 +21,10 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
+from spellman_train.paths import CACHE_DIR
+
 MODEL_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
-DEFAULT_MODEL = Path(__file__).parent / "cache" / "lid.176.bin"
+DEFAULT_MODEL = CACHE_DIR / "lid.176.bin"
 
 # lid.176 labels are ISO 639-1 codes; ours are 639-3. Candidate labels per
 # language, first present in the model wins (languages with no candidate are
@@ -95,16 +97,16 @@ def ladder(model, rows: list[tuple[str, str]], n: int, label_to_our: dict[str, s
     return acc, total, per_lang_correct, per_lang_total
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("eval_files", nargs="+", type=Path)
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
-    parser.add_argument("--labels", choices=sorted(LABEL_SETS), default="lid176",
-                        help="label vocabulary of the model (lid.176 = ISO 639-1, glotlid = FLORES-200)")
-    parser.add_argument("--skip-ladder", action="store_true",
-                        help="text-level accuracy only (for slow models / big files)")
-    args = parser.parse_args()
+def populate(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("eval_files", nargs="+", type=Path)
+    ap.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    ap.add_argument("--labels", choices=sorted(LABEL_SETS), default="lid176",
+                    help="label vocabulary of the model (lid.176 = ISO 639-1, glotlid = FLORES-200)")
+    ap.add_argument("--skip-ladder", action="store_true",
+                    help="text-level accuracy only (for slow models / big files)")
 
+
+def run(args: argparse.Namespace) -> None:
     import fasttext
 
     candidates = LABEL_SETS[args.labels]
@@ -112,7 +114,7 @@ def main() -> None:
 
     # Which of our languages can this model express?
     labels = {l.removeprefix("__label__") for l in model.get_labels()}
-    from spellman_features import LANGUAGES
+    from spellman_train.features import LANGUAGES
 
     supported = {}
     for code in LANGUAGES:
@@ -169,6 +171,12 @@ def main() -> None:
         order = sorted(wt, key=lambda l: wc[l] / wt[l])
         for lang in order[:15]:
             print(f"  {lang:>4}  {wc[lang] / wt[lang]:.2%}  {tc[lang] / tt[lang]:.2%}  (n = {wt[lang]})")
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="spellman-train eval-fasttext", description=__doc__)
+    populate(ap)
+    run(ap.parse_args(argv))
 
 
 if __name__ == "__main__":

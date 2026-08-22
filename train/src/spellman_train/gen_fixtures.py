@@ -1,16 +1,17 @@
 """Regenerate the Rust↔Python parity fixture (hash_vectors.json).
 
-Run:  cd train && uv run spellman-gen-fixtures
+Run:  uv run spellman-train gen-fixtures
 Then: cargo test  (tests/hash_vectors.rs verifies the Rust implementation
 against the regenerated fixture).
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
-from spellman_features import (
+from spellman_train.features import (
     DEFAULT_SEED,
     FeatureConfig,
     LANGUAGES,
@@ -18,9 +19,10 @@ from spellman_features import (
     load_lang_examples,
     token_keys,
 )
+from spellman_train.paths import REPO_ROOT
 
 FIXTURE_PATH = (
-    Path(__file__).resolve().parent.parent
+    REPO_ROOT
     / "crates"
     / "spellman-detector"
     / "fixtures"
@@ -31,7 +33,11 @@ HASH_IDS = ["fmix32", "murmur2", "multiply_shift"]
 LOG2_D_VALUES = [12, 17]
 
 
-def main() -> None:
+def populate(ap: argparse.ArgumentParser) -> None:
+    """No knobs: the fixture is a fixed contract."""
+
+
+def run(args: argparse.Namespace) -> None:
     cases = []
     examples = load_lang_examples()
     texts = [examples[code] for code in LANGUAGES if code in examples]
@@ -77,12 +83,18 @@ def main() -> None:
     )
 
     fixture = {
-        "note": "Rust↔Python feature parity contract; regenerate with uv run spellman-gen-fixtures",
+        "note": "Rust↔Python feature parity contract; regenerate with uv run spellman-train gen-fixtures",
         "cases": cases,
     }
     FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
     FIXTURE_PATH.write_text(json.dumps(fixture, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"wrote {len(cases)} cases to {FIXTURE_PATH}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="spellman-train gen-fixtures", description=__doc__)
+    populate(ap)
+    run(ap.parse_args(argv))
 
 
 if __name__ == "__main__":

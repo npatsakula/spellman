@@ -1,48 +1,70 @@
 # spellman — training reference and guide
 
-How data flows from raw datasets to a promoted model, how to extend the
-pipeline, and what the current model was built from. Architecture and
-feature-space details live in the [design document](design.md); the
+How data flows from raw datasets to a promoted, published model, how to
+extend the pipeline, and what the current model was built from. Architecture
+and feature-space details live in the [design document](design.md); the
 shipped numbers live in the [README](../README.md).
 
-Everything below runs from `train/` (a uv project — `uv sync` first).
+The pipeline is one installable package with one CLI (`train/` is a uv
+project — `uv sync` first):
+
+```
+spellman-train fetch          # build source caches (specs or a manifest recipe)
+spellman-train clean          # model-judge hygiene over warm caches
+spellman-train mix            # dataset: parquet shards + manifest.json
+spellman-train train          # model: folded export -> model/
+spellman-train publish        # dataset / model -> Hugging Face Hub
+```
+
+Every command also runs standalone (`python -m spellman_train.<module>`)
+and has full `--help`. Supporting tools: `short-verify` (3-judge consensus
+for the short lane), `hard-negatives` (FW2 `_removed` boundary mining),
+`referee-short` (rebuild the frozen short referee), `eval-fasttext`
+(baselines), `quantize` (storage-format rewrite), `gen-fixtures`
+(Rust↔Python parity), `prepare-apertium` (mkd analyzer toolchain).
 
 ## Pipeline map
 
 ```
-sources/ adapters ──▶ cache/<name>-<options-hash>.jsonl   (write-through, replayed)
-        │                        │
-        ▼                        ▼
-   spellman-mix ── dedup ── crc32 split ── augment (train/val only) ── cap/shuffle
-        │                        data_mix/{train,val,test}.jsonl
+spellman_train.sources adapters ──▶ cache/<name>-<options-hash>.jsonl  (write-through, replayed)
+        │                                      │
+        ▼                                      ▼
+   spellman-train mix ── dedup ── crc32 split ── augment (train/val only) ── cap/shuffle
+        │                                      data/<mix>/data/{train,val,test}-*.parquet + manifest.json
         ▼
-   spellman-train ── featurize (bucket_tokens_flat) ── train ── θ calibration
-        │                        model/{model.json,model.safetensors,eval_*.tsv}
+   spellman-train train ── featurize (bucket_tokens_flat) ── train ── θ calibration
+        │                                      model/{model.json,model.safetensors,eval_*.tsv}
         ▼
    assess / spellman eval ── granularity ladder, confusion, error dumps
         │
-        ├─ hygiene.py ──── judge-based row removal, rewrites caches in place
-        └─ hard_negatives.py ── FW2 `_removed` windows labeled by the model
+        ├─ spellman-train clean ── judge-based row removal, rewrites caches in place
+        └─ spellman-train hard-negatives ── FW2 `_removed` windows labeled by the model
+        │
+        ▼
+   spellman-train publish dataset|model ── Hugging Face Hub (vpermilp/spellman, both repo types)
 ```
 
 The loop is iterative: mix → train → assess → eyeball error dumps →
-hygiene / hard negatives / new sources → mix again. Promoting a model
-means replacing `model/` and verifying the mtime (a silent-promotion bug
-once shipped a stale model while the README claimed new numbers).
+clean / hard negatives / new sources → mix again. Promoting a model means
+replacing `model/` and verifying the mtime (a silent-promotion bug once
+shipped a stale model while the README claimed new numbers), then
+`publish model` + `publish dataset`.
 
 ## Data sources
 
 ### The registry
 
-A source is one module in `train/sources/` with a `@register("name")`
-dataclass subclassing `Dataset` whose fields become the
-`--source name:key=value,...` knobs (values go through
-`ast.literal_eval`, so `docs=3000` is an int, `streaming=False` a bool).
-`samples()` yields `(lang_code, text)` pairs; everything else — option
-validation, caching — is inherited:
+A source is one module in `spellman_train/sources/` with a
+`@register("name")` dataclass subclassing `Dataset` whose fields become the
+`--source name:key=value,...` knobs (values go through `ast.literal_eval`,
+so `docs=3000` is an int, `streaming=False` a bool). `samples()` yields
+`(lang_code, text)` pairs; everything else — option validation, caching —
+is inherited. Registration is automatic: the registry imports every module
+in the package on first use, so a new adapter is mixable the moment the
+file exists:
 
 ```python
-# train/sources/mycorpus.py
+# spellman_train/sources/mycorpus.py
 from dataclasses import dataclass
 from typing import Iterator
 
@@ -63,11 +85,8 @@ class MyCorpus(Dataset):
         yield self.lang, " ".join(text.split())
 ```
 
-Register it for the mixer by adding the module to the import line in
-`mix.py` (`from sources import fineweb2, hf, …, mycorpus`), then:
-
 ```bash
-uv run spellman-mix --out data_mix --source mycorpus:lang=udm --source ...
+uv run spellman-train mix --out data_mix --source mycorpus:lang=udm --source ...
 ```
 
 **Caching:** each instance's output lands in
@@ -76,7 +95,7 @@ fingerprint. Re-mixing with unchanged options replays the cache
 (columnar, via `polars.read_ndjson`); any option change rebuilds it.
 Several instances of one adapter (e.g. multiple `hf` sources) never
 collide. Caveat: a rebuild re-downloads the *upstream* data — rerun
-`hygiene.py` after any rebuild (see below).
+`clean` after any rebuild (see below).
 
 If the dataset already lives on the HuggingFace Hub you usually don't
 need new code at all — the generic `hf` adapter is the escape hatch.
@@ -92,7 +111,7 @@ need new code at all — the generic `hf` adapter is the escape hatch.
 | `opus` | `corpus`, `src`, `tgt`, `lang`, `limit`, `min_chars` | OPUS moses bitexts, latest version via the OPUS API; yields one aligned side |
 | `csv` | `path`, `column`, `lang`, `min_chars` | local CSV/TSV, one text column, single language |
 | `jsonl` | `path`, `min_chars` | pre-labeled `{"lang","text"}` rows — the output side of offline tools (hard negatives, hygiene exports) |
-| `diverse` | `lang`, `pool_repo`+`pool_config`+`pool_docs` or `pool_file`, `budget`, `min_gain`, `min_df`, `expose_top`, `min_exposures`, `min_bands`, `min/max_chars`, `max_candidates`, `seed`, `algo`, `norm` (auto) | lexical-diversity generator: first-come lemma-coverage selection over a pool (any HF repo/config, materialized once under cache/, or a built cache file). Lemmas come from the language-keyed normalizer registry (`sources/normalize.py`: pymorphy3 rus/ukr, Stanza bel/bul/srp/kaz/kir, Apertium mkd, corpus prefix-cluster stems for the agglutinative set) and are cached in per-(pool, normalizer) sidecars. Selection (algo=4, the shipped model): seeded shuffle, accept on >=`min_gain` new df>=2 lemmas or starved top-lemma carry, length-stratum budget caps; algo=5/6 add 20-char bands with per-(lemma,band) exposure spread and a variety fill — see `docs/experiments.md` for what each variant measured |
+| `diverse` | `lang`, `pool_repo`+`pool_config`+`pool_docs` or `pool_file`, `budget`, `min_gain`, `min_df`, `expose_top`, `min_exposures`, `min_bands`, `min/max_chars`, `max_candidates`, `seed`, `algo`, `norm` (auto) | lexical-diversity generator: first-come lemma-coverage selection over a pool (any HF repo/config, materialized once under cache/, or a built cache file). Lemmas come from the language-keyed normalizer registry (`spellman_train/sources/normalize.py`: pymorphy3 rus/ukr, Stanza bel/bul/srp/kaz/kir, Apertium mkd, corpus prefix-cluster stems for the agglutinative set) and are cached in per-(pool, normalizer) sidecars. Selection (algo=6, the shipped model): seeded shuffle accepted on ≥`min_gain` new df≥2 lemmas or starved top-lemma carry, 20-char bands with per-(lemma,band) exposure spread, then a variety fill; see `docs/experiments.md` for what each variant measured |
 | `ukr_tweets` | `lang`, `limit`, `min_chars`, `cyr` | saganoren/ukr-twi-corpus, 1.85M raw tweets; Twitter's `lang=="uk"` self-label + Cyrillic gate; proper CSV parsing (tweets embed newlines) |
 | `mn_social` | `lang`, `limit`, `min_chars` | ganaxy/diploma — 10k raw Mongolian news/FB/YouTube comments (`text_raw`) |
 | `kazsandra` | `lang`, `limit`, `min_chars`, `cyr` | IS2AI/KazSAnDRA Kazakh reviews; only the canonical ib/valid/test zips, deduped on `custom_id` (the resampled `*_ros`/`*_rus` zips duplicate rows) |
@@ -100,7 +119,7 @@ need new code at all — the generic `hf` adapter is the escape hatch.
 The wild-UGC adapters and the `hf` raw-mode gates exist for the
 social-media lane (the rusentitweet analogs); the researched candidate
 list with licenses, access commands and per-dataset validation reports
-lives in `train/WILD_UGC_CANDIDATES.md` and
+lives in `docs/wild-ugc-candidates.md` and
 `train/cache/raw/<slug>/VALIDATION.md`.
 
 Shared normalization conventions: whitespace-flattened single-line
@@ -109,10 +128,10 @@ level (`train_per_lang`, `limit`) or mix level (`--cap-per-lang`).
 
 ### Mixing, splitting, augmentation
 
-`spellman-mix` merges any combination of sources:
+`spellman-train mix` merges any combination of sources:
 
 ```bash
-uv run spellman-mix --out data_mix \
+uv run spellman-train mix --out data_mix \
     --source fineweb2:docs_per_lang=3600,per_doc=4 \
     --source tatoeba:train_per_lang=8000 \
     --source hf:repo=cis-lmu/Glot500,config=tat_Cyrl,lang=tat,docs=3000 \
@@ -137,11 +156,22 @@ uv run spellman-mix --out data_mix \
 - The cap/shuffle stages intentionally stay in Python `random.Random`
   (their exact draw order *is* the output contract — Polars' RNG cannot
   reproduce it); bulk IO and dedup are Polars.
+- **Output format** is parquet by default:
+  `<out>/data/{split}-00000-of-00001.parquet` (zstd, `lang`+`text`
+  columns) — the HF-dataset-native layout that `publish dataset` uploads.
+  `--format jsonl` restores the legacy flat `{split}.jsonl` (the trainer
+  reads both).
+- **Recipes are data**: every run records its exact argv, knobs and
+  parsed sources into `<out>/manifest.json`. Replay one with
+  `--from-manifest <old>/manifest.json --out <new>` (live `--out` /
+  `--format` override; live `--source` appends). `fetch --manifest`
+  prebuilds the same recipe's caches.
 
 ### Data hygiene
 
-`train/hygiene.py` drops rows the current model contradicts, rewriting
-caches **in place** (sidecars untouched, so the fingerprint stays valid):
+`spellman-train clean` drops rows the current model contradicts,
+rewriting caches **in place** (sidecars untouched, so the fingerprint
+stays valid):
 
 - **Model judge** (default): top-1 differs from the label at
   `--conf` (default 0.995) → dropped, after a `MIN_TOKENS = 8` guard.
@@ -160,15 +190,17 @@ caches **in place** (sidecars untouched, so the fingerprint stays valid):
   training needs.
 
 ```bash
-uv run python hygiene.py cache/<name>-*.jsonl [--conf 0.995] [--script] [--dry-run]
+uv run spellman-train clean cache/<name>-*.jsonl [--conf 0.995] [--script] [--dry-run]
 ```
 
 Rerun after any cache rebuild — a rebuild re-downloads the dirty
-upstream data.
+upstream data. The short-text lane (3–19 char rows, under the token
+guard) gets `short-verify` instead: 3-judge consensus (spellman, GlotLID,
+lid.176) with `--min-agree`, `--no-spellman` for eval referees.
 
 ### Hard negatives
 
-`train/hard_negatives.py` mines FineWeb-2's `_removed` subsets —
+`spellman-train hard-negatives` mines FineWeb-2's `_removed` subsets —
 documents rejected from e.g. `udm_Cyrl` because the FW2 pipeline's LID
 judged them *another* language, overwhelmingly Russian. Each removed
 window is labeled by the current model and kept only when the model is
@@ -182,7 +214,7 @@ highest-leverage next step.
 ## Training
 
 ```bash
-uv run spellman-train --data data_mix --out ../model \
+uv run spellman-train train --data data_mix --out ../model \
     --log2-d 17 --dim 128 --epochs 6 --lr 0.05 --hash-stats
 ```
 
@@ -190,6 +222,7 @@ Flags: `--log2-d` (bucket count D = 2^log2_d), `--hash-id
 {fmix32,murmur2,multiply_shift}`, `--seed`, `--dim`, `--epochs`,
 `--batch-size` (256), `--k` (tokens per training sample, 256), `--lr`,
 `--per-lang-cap` (50k train-side rebalance), `--hash-stats`, `--device`.
+`--data` reads parquet shards when present, else legacy `{split}.jsonl`.
 
 Details that matter:
 
@@ -210,7 +243,7 @@ Details that matter:
   `model.json`, roughly halving the artifact. Every quantized store is
   gated at export against validation accuracy (`--quant-max-drop`,
   default 0.2pp) — the loader dequantizes, so the runtime graph never
-  sees the difference. `uv run python quantize_eval.py --store int8-row
+  sees the difference. `uv run spellman-train quantize --store int8-row
   --out /tmp/mi` rewrites an existing model into any format for offline
   comparison.
 
@@ -231,27 +264,44 @@ Details that matter:
   - `train/rusentitweet_eval.tsv` — 2,679 wild Russian tweets (78%
     containing Latin words, 61% @mentions, 20% URLs): the register
     clean corpora never show.
-- `uv run python eval_fasttext.py ../model/eval_test.tsv
+- `uv run spellman-train eval-fasttext ../model/eval_test.tsv
   tatoeba_eval.tsv` — fastText lid.176 baseline on the identical ladder
   (fragments of gold languages outside its label set are excluded).
 - `benchmarks/lid-bench` — Rust-side baselines (whichlang, lingua) on
   identical sampled rows, accuracy + latency; see the README comparison
   table for methodology and results.
 
+## Publishing
+
+Both artifacts live under `vpermilp/spellman` on the Hub — the model and
+the dataset are different repo types, so the name hosts both without
+collision:
+
+```bash
+uv run spellman-train publish dataset --dir data/v11c   # parquet + manifest + rendered card
+uv run spellman-train publish model    --dir ../model   # model.json + model.safetensors (+ README.md)
+```
+
+`publish dataset` renders the README.md card from the mix manifest
+(splits, counts, languages, recipe summary), creates the repo private if
+missing, and uploads idempotently. `publish model` is transport only —
+the model card stays hand-maintained in the model directory. Verify a
+publish with a fresh `hf download vpermilp/spellman --repo-type dataset`.
+
 ## Current model: recipe and results
 
-Mixed-domain mix, 16k-per-language cap: FineWeb-2 line-windows (26
-languages) + ~104k Tatoeba training sentences + per-language top-ups —
-Tatar (Glot500, a 162k-sentence parallel corpus, Wikipedia, and
-FineWeb-2 `tat_Latn` for the Latin-script side), Bashkir (Telegram-bot
-parallel), Chuvash (community mono corpus), Tuvan (linguist-collected
-web text), Kyrgyz (Sputnik news), Udmurt (ai-forever incl. chat logs +
-zerpal news), Meadow Mari (literary parallel), Macedonian (real tweets),
-Glot500 Tajik/Sakha, native Tajik/Sakha corpora (gated HF datasets),
-Chechen (Leipzig community crawls 2017+2023, OPUS translatewiki UI
-strings, NM 171k ce-ru parallel — Chechen went from weakest class to
-F1 1.00), plus 1,706 FW2 `_removed` hard negatives. All caches passed
-through hygiene (twin-protected, ~1.3k foreign rows removed). dim 128,
+Mixed-domain mix (v11c), 32k-per-language cap, diverse budgets ×1.5
+(rus/ukr 20k, Turkic 16k), a 6k wikisource literary lane for rus, and
+`--short-floor 0.40`: FineWeb-2 line-windows + ~104k Tatoeba training
+sentences + per-language top-ups (Tatar Glot500/Wikipedia/parallel +
+`tat_Latn`, Bashkir Telegram parallel, Chuvash community mono, Tuvan
+linguist-collected, Kyrgyz Sputnik news, Udmurt ai-forever + zerpal,
+Meadow Mari literary parallel, Macedonian real tweets, Glot500
+Tajik/Sakha, native Tajik/Sakha corpora, Chechen Leipzig 2017+2023 +
+OPUS translatewiki + NM 171k ce-ru), the wild-UGC and short-utterance
+lanes of `docs/wild-ugc-candidates.md`, 12 `diverse:` lanes
+(algo=6 banded lemma coverage), and 1,706 FW2 `_removed` hard
+negatives. All caches passed hygiene (twin-protected). dim 128,
 6 epochs, D = 2^17, fmix32, wild/short augmentation on train/val.
 
 Results and history are tabulated in the [README](../README.md). Known
@@ -261,14 +311,27 @@ texts, Latin-script Tatar short sentences, tgk data thinness.
 
 ### Replaying this mix
 
-Every `spellman-mix` run records its exact recipe into
+Every `mix` run records its exact recipe into
 `<out>/manifest.json` — the current model's recipe is
-`train/data_mix5/manifest.json` (the standing FineWeb-2/Tatoeba/OPUS
-recipe below plus the wild-UGC, short-utterance and diverse-selection
-sources of
-`train/WILD_UGC_CANDIDATES.md`). The pre-wild standing recipe,
-reconstructed from the cache fingerprints (the Komi parallel corpus is
-deliberately absent — rejected by the contamination audit):
+`train/data_mix5/manifest.json`. Replay it (warm caches) into a fresh
+parquet mix with:
+
+```bash
+uv run spellman-train mix --from-manifest data_mix5/manifest.json --out data/v11c
+```
+
+On a fresh machine the caches rebuild by re-downloading everything
+(`fetch --manifest data_mix5/manifest.json --jobs 4` does it up front
+in parallel), so the full loop is: fetch a judge model
+(`hf download vpermilp/spellman --local-dir ../model`), build the
+caches, run the mix once, then `clean cache/*.jsonl --script`, then
+`hard-negatives --model ../model`, then re-mix (warm caches replay
+instantly) and train. Rebuilds re-download the upstream data — always
+rerun `clean` after one.
+
+The pre-wild standing recipe, reconstructed from the cache fingerprints
+(the Komi parallel corpus is deliberately absent — rejected by the
+contamination audit):
 
 ```bash
 # prerequisites (once):
@@ -277,7 +340,7 @@ deliberately absent — rejected by the contamination audit):
 #     downloads.tatoeba.org)
 #   - hf auth login, with the gates of muhtasham/tajik-corpus and
 #     ailabykt/sakha-corpus-mono accepted in the browser
-uv run spellman-mix --out data_mix \
+uv run spellman-train mix --out data_mix \
     --source fineweb2:docs_per_lang=3600,per_doc=4 \
     --source tatoeba:train_per_lang=8000 \
     --source hf:repo=cis-lmu/Glot500,config=tat_Cyrl,lang=tat,docs=3000,per_doc=4 \
@@ -307,38 +370,39 @@ uv run spellman-mix --out data_mix \
     --cap-per-lang 16000 --wild-augment 0.3 --short-augment 0.2
 ```
 
-On a fresh machine the caches rebuild by re-downloading everything, so
-the full loop is: fetch a judge model
-(`hf download vpermilp/spellman --local-dir ../model`), run the mix
-once, then `hygiene.py cache/*.jsonl --script`, then
-`hard_negatives.py --model ../model`, then run the same mix again
-(warm caches replay instantly) and train. Rebuilds re-download the
-upstream data — always rerun hygiene after one.
-
 ## End-to-end walkthrough
 
 ```bash
 cd train && uv sync
 
-# 1. mix (replays warm caches; first run downloads)
-uv run spellman-mix --out data_mix \
+# 0. (fresh machine) prebuild caches in parallel + fetch a judge model
+uv run spellman-train fetch --manifest data_mix5/manifest.json --jobs 4
+hf download vpermilp/spellman --local-dir ../model
+
+# 1. mix (replays warm caches; parquet + manifest.json; --from-manifest
+#    replays a recorded recipe)
+uv run spellman-train mix --out data_mix \
     --source fineweb2:docs_per_lang=3600,per_doc=4 \
     --source tatoeba:train_per_lang=8000 \
     --cap-per-lang 16000 --wild-augment 0.3 --short-augment 0.2
 
 # 2. train + export
-uv run spellman-train --data data_mix --out ../model \
+uv run spellman-train train --data data_mix --out ../model \
     --log2-d 17 --dim 128 --epochs 6 --lr 0.05 --hash-stats
 
 # 3. evaluate
 cd .. && cargo run --release --bin assess -- --model model model/eval_test.tsv
 ./target/release/spellman eval model/eval_test.tsv
 
-# 4. audit errors, then iterate (hygiene / hard negatives / new sources)
+# 4. audit errors, then iterate (clean / hard negatives / new sources)
 cargo run --release --bin assess -- --model model train/tatoeba_eval.tsv \
     --dump-errors errors --dump-per-lang 100
+
+# 5. publish (dataset + model) once a mix/model is promoted
+cd train && uv run spellman-train publish dataset --dir data_mix
+uv run spellman-train publish model --dir ../model
 ```
 
 The Rust↔Python feature parity must hold at all times:
-`uv run spellman-gen-fixtures && cargo test` (run both sides after any
-feature/hash change; every trained model is invalid if they drift).
+`uv run spellman-train gen-fixtures && cargo test` (run both sides after
+any feature/hash change; every trained model is invalid if they drift).

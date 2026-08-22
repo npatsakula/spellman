@@ -15,10 +15,14 @@ not be filtered through the model it scores):
 Sources are disjoint from the short training caches: the crawl tail
 (training reads the head) with a belt-and-braces exact-text filter, plus
 umsab validation/test splits (training used train.jsonl only).
+
+Usage:
+    uv run spellman-train referee-short
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import random
 import re
@@ -27,8 +31,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from eval_fasttext import GLOTLID_CANDIDATES, LID176_CANDIDATES
-from short_verify import judge_text
+from spellman_train.eval_fasttext import GLOTLID_CANDIDATES, LID176_CANDIDATES
+from spellman_train.paths import CACHE_DIR, TRAIN_DIR
+from spellman_train.short_verify import judge_text
 
 TWINS = {
     "rus": {"rus", "ukr", "bel"}, "ukr": {"rus", "ukr", "bel"}, "bel": {"rus", "ukr", "bel"},
@@ -55,29 +60,39 @@ def vote(pred: str, lang: str, mapping: dict) -> str:
     return "abstain"
 
 
-def main() -> None:
+def populate(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--glotlid", type=Path, default=CACHE_DIR / "raw" / "model.bin")
+    ap.add_argument("--lid176", type=Path, default=CACHE_DIR / "lid.176.bin")
+    ap.add_argument("--corpus", type=Path, default=CACHE_DIR / "raw" / "ukr-twi-corpus" / "corpus.csv")
+    ap.add_argument("--umsab", type=Path, default=CACHE_DIR / "raw" / "umsab" / "data")
+    ap.add_argument("--out", type=Path, default=TRAIN_DIR / "short_eval.tsv")
+
+
+# Short-lane training caches whose texts the referee must exclude.
+SHORT_TRAIN_CACHES = [
+    "ukr_tweets-90bd1db874.jsonl", "ukr_tweets-cda504406e.jsonl",
+    "hf-9822b74f8b.jsonl", "hf-ae1e14ea70.jsonl", "hf-bc620771c4.jsonl",
+    "hf-f16d89f3df.jsonl", "hf-42211cf99a.jsonl",
+]
+
+
+def run(args: argparse.Namespace) -> None:
     import fasttext
 
-    glot = fasttext.load_model("cache/raw/model.bin")
-    lid = fasttext.load_model("cache/lid.176.bin")
+    glot = fasttext.load_model(str(args.glotlid))
+    lid = fasttext.load_model(str(args.lid176))
 
     train_texts: set[str] = set()
-    for f in Path("cache").glob("*.jsonl"):
-        if f.name.startswith(("ukr_tweets", "hf-", "kazsandra", "mn_social")) and (f.stat().st_mtime > Path("mix.py").stat().st_mtime - 86400 * 3):
-            pass  # precise set built below from the known short caches
-    for f in [
-        "cache/ukr_tweets-90bd1db874.jsonl", "cache/ukr_tweets-cda504406e.jsonl",
-        "cache/hf-9822b74f8b.jsonl", "cache/hf-ae1e14ea70.jsonl", "cache/hf-bc620771c4.jsonl",
-        "cache/hf-f16d89f3df.jsonl", "cache/hf-42211cf99a.jsonl",
-    ]:
-        for line in open(f, encoding="utf-8"):
-            train_texts.add(json.loads(line)["text"])
+    for name in SHORT_TRAIN_CACHES:
+        with (CACHE_DIR / name).open(encoding="utf-8") as f:
+            for line in f:
+                train_texts.add(json.loads(line)["text"])
 
     rows: list[tuple[str, str]] = []
     # Full-corpus scan: twin rows are certified by orthography (position-
     # independent), and exact-text exclusion below enforces disjointness
     # from the training caches.
-    for chunk in pd.read_csv("cache/raw/ukr-twi-corpus/corpus.csv",
+    for chunk in pd.read_csv(args.corpus,
                              usecols=["text", "lang"], chunksize=200_000):
         for t, l in zip(chunk["text"].tolist(), chunk["lang"].tolist()):
             if isinstance(t, str) and l in ("uk", "ru"):
@@ -86,7 +101,7 @@ def main() -> None:
                     rows.append(("ukr" if l == "uk" else "rus", t))
     for lang, name in UMSAB:
         for split in ("validation", "test"):
-            p = Path(f"cache/raw/umsab/data/{name}/{split}.jsonl")
+            p = args.umsab / name / f"{split}.jsonl"
             if not p.exists():
                 continue
             for line in p.open(encoding="utf-8"):
@@ -125,12 +140,18 @@ def main() -> None:
     by: dict[str, list[str]] = {}
     for lang, text in kept:
         by.setdefault(lang, []).append(text)
-    with open("short_eval.tsv", "w", encoding="utf-8") as f:
+    with args.out.open("w", encoding="utf-8") as f:
         for lang in sorted(by):
             for text in rng.sample(by[lang], min(500, len(by[lang]))):
                 f.write(f"{lang}\t{text}\n")
     print(f"candidates {len(rows)} -> kept {len(kept)}: {dict(stats)}")
     print("referee:", {k: min(500, len(v)) for k, v in sorted(by.items())})
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="spellman-train referee-short", description=__doc__)
+    populate(ap)
+    run(ap.parse_args(argv))
 
 
 if __name__ == "__main__":
