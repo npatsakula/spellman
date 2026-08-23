@@ -114,9 +114,10 @@ not optional on raw doc-bearing sources** — OSCAR/MADLAD rows reach 190k chars
 and unclamped they blow up downstream vectorized passes (the hygiene judge
 materializes `[tokens × classes]` per chunk). DGurgurov macedonian_sa/bulgarian_sa
 (MIT) replace the NC-licensed mteb Macedonian tweets of the old recipe. These 26
-specs yield ~3.5M wild/UGC rows; the combined v4 recipe (standing 15:15 sources +
-these, minus the NC mteb mkd source and the subsumed windowed chuvash_mono) lives
-in `data_mix2/manifest.json` after the first run.
+specs yield ~3.5M wild/UGC rows; the promoted recipe (standing sources + these,
+minus the NC mteb mkd source and the subsumed windowed chuvash_mono) is recorded
+in the promoted mix's `manifest.json` — see the dataset repo
+(`vpermilp/spellman`, dataset type) or `train/data_mix5/manifest.json`.
 
 Blocked on the HF gate (manual approval — `gated: manual`, still 403 for the
 vpermilp token as of 2026-08-17): add this spec once the BashkirNLPWorld owners

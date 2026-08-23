@@ -247,7 +247,7 @@ is stored — `float16` (no scales), or `int8`/`fp8e4m3` with a f32
 `scales` tensor per bucket row or per language column. The loader
 dequantizes into the canonical table (`resolve_table` is the single place
 that knows schemes), so the runtime graph and every tool are unchanged;
-`spellman-train --store` gates each scheme against validation accuracy at
+`spellman-train train --store` gates each scheme against validation accuracy at
 export. Measured on the shipped model: int8 and fp8 both land within
 ±0.02pp on both referees while roughly halving the artifact (3.9–4.5MB
 vs 7.9MB). True int8 *compute* was prototyped and rejected on evidence:

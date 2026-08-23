@@ -20,11 +20,14 @@ out-of-domain · **cosmus** = 2,808 gold-labeled wild Russian.
 | v3 | word/bigram lexical channel | 98.28 | 93.73* | — | 98.66 | — |
 | v4 | wild-UGC lane (26 sources) | 98.62* | 91.17 | — | 98.57 | 94.66 |
 | v5 | short lane (3–19-char wild rows, twins referee built) | — | 92.06 | 89.20 | — | — |
-| v6 (shipped 2026-08-20) | + diverse lanes rus/ukr (pymorphy) | 98.30 | 92.56 | 89.90 | 98.42 | 96.79 |
-| **v8e (current)** | + Turkic diverse lanes, real normalizers everywhere, diverse v2 selection | **98.31** | **93.40** | **90.07** | 98.39 | 96.72 |
+| v6 | + diverse lanes rus/ukr (pymorphy) | 98.30 | 92.56 | 89.90 | 98.42 | 96.79 |
+| v8e | + Turkic diverse lanes, real normalizers everywhere, diverse v2 selection | 98.31 | 93.40 | 90.07 | 98.39 | 96.72 |
+| **v11c (current, shipped 2026-08-22)** | + cap 32k, diverse budgets ×1.5, 12 diverse lanes (algo=6), wikisource literary lane, short-floor 0.40 | **98.56** | **94.47** | **91.29** | **98.78** | **97.15** |
 
 \* not comparable across rows: v3–v4 measured on different mixes/referee
-versions; deltas were verified within-row at the time.
+versions; deltas were verified within-row at the time. v11c's held-out is on
+the re-baselined 32k-cap test split (352,470 rows) — not comparable to the
+98.31 of the 16k-cap era. Literary referee (new in v11c): 93.90 → 97.15.
 
 ## Diverse-selection algorithm (the 2026-08-20/22 arc)
 
@@ -49,9 +52,12 @@ training set, keyed by real lemmas.
 5. **algo=5 — 20-char bands + per-(lemma,band) exposure spread**: top
    vocabulary must appear in ≥3 length regimes. Trade, not win: short
    90.07→90.77 and cosmus 96.72→96.90 (both best-ever), rst 93.40→92.71.
-   In the codebase for the next cycle; not in the shipped model.
 6. **algo=6 — fill pass**: after coverage saturates, shuffle-variety
    rows top up the budget. Born from the short-diverse finding below.
+
+algo=5/6 are the defaults since v8e's cycle, and **v11c's 12 diverse lanes
+were built with algo=6** (verified against the cache fingerprints: the
+budget-20000 rus lane records `algo=6, norm=pymorphy3`).
 
 ## Short-diverse (the strongest signal we didn't ship)
 
@@ -98,7 +104,8 @@ coverage head + wild-register augmentation of the tail.
   we transliterate on the way in — lemma script is irrelevant for
   grouping keys. bel/bul/kaz/kir models are Cyrillic-native and good.
 - Stanza has Kazakh and Kyrgyz lemma models (nothing else does).
-- lttoolbox builds locally via cmake in minutes (prepare_apertium.py);
+- lttoolbox builds locally via cmake in minutes (`spellman-train
+  prepare-apertium`);
   mkd lemmatization quality is excellent (најубавиот→убав, including
   apertium `+`-compound heads; lt-proc eats non-tokenizable inputs like
   `km²` — identity-fill handles it).
@@ -106,7 +113,7 @@ coverage head + wild-register augmentation of the tail.
 ## What's deliberately not in the model
 
 - The church/bible corpus lane (Tatoeba counterweight where GlotLID
-  still leads 99.25 vs 98.39).
+  still leads 99.25 vs 98.78).
 - Content-free → uncertain runtime policy (URL/mention-only rows).
 - bashkir-web-corpus (gated HF dataset, needs manual acceptance).
 

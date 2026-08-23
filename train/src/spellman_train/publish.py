@@ -52,7 +52,7 @@ def _split_sizes(mix_dir: Path, manifest: dict, shards: dict[str, list[Path]]) -
 
 def dataset_card(manifest: dict, shards: dict[str, list[Path]], sizes: dict[str, list[int]]) -> str:
     """Render the README.md dataset card (YAML frontmatter + recipe summary)."""
-    langs = "\n".join(f"  - {code}" for code in _language_codes(manifest))
+    langs = "\n".join(f"  - {code}" for code in _language_codes(shards))
     data_files = "\n".join(
         f"      - split: {split}\n        path: data/{split}-*.parquet" for split in shards
     )
@@ -91,7 +91,8 @@ dataset_info:
 # spellman — Cyrillic language-ID training mix
 
 Training dataset for the [spellman](https://huggingface.co/{DEFAULT_REPO}) detector:
-30 classes (25 Cyrillic-column + 5 Latin big-5), one row per sample
+26 languages (21 Cyrillic-column + the 5 Latin big-5 — the model's other 4
+classes are script-routed and never appear as rows), one row per sample
 (`lang`, `text`), content-addressed train/val/test split.
 
 License: mixed — each row inherits its upstream corpus's license; the
@@ -114,13 +115,13 @@ The exact spec strings, including option quoting, are in `manifest.json` (`argv`
 """
 
 
-def _language_codes(manifest: dict) -> list[str]:
-    """The card's language tags: the model's class inventory — sources carry
-    adapter-level names, but the dataset exists to train exactly these 30
-    classes."""
-    from spellman_train.features import LANGUAGES
+def _language_codes(shards: dict[str, list[Path]]) -> list[str]:
+    """Language tags from the data itself (26 classes: 21 Cyrillic-column
+    + 5 Latin; the 4 script-unique classes have no columns and no rows)."""
+    import polars as pl
 
-    return list(LANGUAGES)
+    frames = [pl.scan_parquet([str(p) for p in paths]).select("lang") for paths in shards.values()]
+    return sorted(set(pl.concat(frames).unique().collect()["lang"].to_list()))
 
 
 def run_dataset(args: argparse.Namespace) -> None:
