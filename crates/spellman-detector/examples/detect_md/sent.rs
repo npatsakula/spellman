@@ -226,10 +226,7 @@ mod tests {
         assert_eq!(glue_short(pieces, 20), ["«Да!» — сказал он."]);
         // question + closer + attribution works the same
         let pieces = parts("«Эй, кто там?» — крикнул вахтёр");
-        assert_eq!(
-            glue_short(pieces, 20),
-            ["«Эй, кто там?» — крикнул вахтёр"]
-        );
+        assert_eq!(glue_short(pieces, 20), ["«Эй, кто там?» — крикнул вахтёр"]);
     }
 
     #[test]
