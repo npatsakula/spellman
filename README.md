@@ -21,7 +21,7 @@ from the same eval data):
 
 | eval | rung | spellman | GlotLID v3 | fastText lid.176 |
 |---|---|---|---|---|
-| held-out mix (368,507, pristine test) | text | **97.52%** | 93.28%‡§ | 81.46%* |
+| held-out mix (368,507, pristine test) | text | **97.52%** | 90.47%‡ | 81.46%* |
 | Tatoeba (37,051, out-of-domain) | word / pair / triple | **69.25 / 87.47 / 93.84** | 43.9 / 79.3 / 91.9‡ | 59.0 / 79.0 / 87.9 |
 | Tatoeba (37,051, out-of-domain) | text | 98.64% | **99.25%**‡ | 94.90%* |
 | rusentitweet (2,606 wild Russian tweets, label-audited) | text | **93.28%**† | 82.73%‡ | 90.41% |
@@ -38,9 +38,8 @@ referees — the license cleanup costs ~1pp on the wild-Russian referees and
 buys tgk/kir at F1 0.99–1.00 (v11c's tgk recall was 0.92 from data thinness;
 v12's Tajik is perfect on 32k held-out rows).
 
-§ measured on the v11c-era held-out split (same recipe shape, NC
-predecessors); the current split's spellman and fastText cells are
-same-split.
+§ measured on the v11c-era split (same recipe shape, NC predecessors);
+every spellman cell and the held-out baseline cells above are same-split.
 
 \* fastText scored on the subset of languages its label set supports
 (24/30; no kpv/udm labels, and its `uz` is Latin-script Uzbek — it scores
@@ -67,9 +66,12 @@ the open-LID SOTA fastText model (2,102 labels, 1.7 GB), scored with
 script-variant labels mapped to our classes (`tat_Latn` → tat — the
 courtesy goes to the baseline) and full coverage of the evals' languages
 (ara/cmn are absent from its label set; neither appears in these files).
-By length: held-out 77.0 / 92.1 / 97.6 (≤20 / 21–100 / >100 — spellman
-leads every bucket), Tatoeba 97.8 / 99.3 / 100.0 (GlotLID leads every
-bucket). It predicts at ~355 µs/doc — ~100× spellman on the M1 Pro,
+By length, held-out same-split: GlotLID 59.7 / 90.1 / 96.5 vs spellman
+89.6 / 97.5 / 99.0 (≤20 / 21–100 / >100 — spellman leads every bucket,
+by ~30pp on ≤20-char rows); Tatoeba 97.8 / 99.3 / 100.0 (GlotLID leads
+every bucket). It predicts at ~355 µs/doc on CPU (a batched torch port
+of its softmax scorer does the full 368k held-out file in 49 s on MPS) —
+~100× spellman on the M1 Pro,
 ~300× on the AMD 395 Max. The split is the story: spellman wins the
 wild, heavy-Cyrillic workload by 11.7pp on Russian tweets (94.5 vs 82.7) and the single-word rung by ~23pp
 (2,102-class label entropy is brutal on short text); GlotLID's far

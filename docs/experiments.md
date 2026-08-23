@@ -238,6 +238,9 @@ gone from top confusions — the gates did their job.
 - **Promoted 2026-08-24** (user-approved): model = train/model-v12hn2;
   quant gates int8-row/col fp8-row/col all 97.50–97.51 (≤0.02pp drop);
   dataset card now renders per-upstream licenses (publish.py LICENSES);
-  manifest committed at train/data/v12/manifest.json. Unpulled levers
-  for wave 2: uzn/mon in hard-negative TARGETS, cap raise past 32k,
-  the conf-0.90 uzn/che judge pass.
+  manifest committed at train/data/v12/manifest.json. GlotLID re-scored
+  same-split via a batched MPS port of its softmax scorer added to
+  eval-fasttext --device (49 s for 368k rows, parity 1992/1992):
+  90.47 vs spellman 97.52 — spellman leads every length bucket. Unpulled
+  levers for wave 2: uzn/mon in hard-negative TARGETS, cap raise past
+  32k, the conf-0.90 uzn/che judge pass.

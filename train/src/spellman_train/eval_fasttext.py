@@ -2,20 +2,24 @@
 
 Mirrors src/bin/assess.rs fragment-for-fragment: whitespace tokens with at
 least one letter, consecutive n-word windows joined by a single space,
-accuracy at word / pair / triple / text level. fastText's label set does not
-cover all spellman languages (no Cyrillic uzn/tyv/sah/mhr/kpv); fragments of
-unsupported gold languages are excluded so the rungs are comparable to
+accuracy at word / pair / triple / text level. fastText's label set does
+not cover all spellman languages (no Cyrillic uzn/tyv/sah/mhr/kpv); fragments
+of unsupported gold languages are excluded so the rungs are comparable to
 fastText's own published methodology.
 
 Usage (fasttext-numpy2 build — runs in the main env):
-    uv run spellman-train eval-fasttext \
+    uv run spellman-train eval-fasttext \\
         ../model/eval_test.tsv tatoeba_eval.tsv
+
+``--device mps``/``cuda`` scores through a batched torch scorer (the
+input-row gather + output matmul on the accelerator) instead of
+fastText's per-row CPU ``predict`` — required for big models (GlotLID,
+2k labels) on large files. Parity-checked against ``predict`` first.
 """
 
 from __future__ import annotations
 
 import argparse
-import functools
 import sys
 import urllib.request
 from collections import Counter
@@ -72,6 +76,73 @@ def word_tokens(text: str) -> list[str]:
     return [t for t in text.split() if any(c.isalpha() for c in t)]
 
 
+class BatchedScorer:
+    """Accelerator-batched fastText scorer for softmax-loss models.
+
+    ``predict`` for loss=softmax is exactly argmax(W_out @ mean(input
+    rows)), so the heavy part — the input-row gather and the 2k-class
+    output matmul — runs batched on the device while fastText's own C++
+    tokenizer (``get_line`` + ``get_subwords``) produces the input row
+    ids; its hashing is never reimplemented. Aborts unless the first
+    `parity_n` probe rows match ``fasttext.predict`` label-for-label
+    (float32 tie-flips excepted).
+    """
+
+    def __init__(self, model, device: str, batch: int = 4096, parity_n: int = 2000):
+        import torch
+
+        loss = str(getattr(model.f.getArgs(), "loss")).rsplit(".", 1)[-1]
+        if loss != "softmax":
+            raise SystemExit(f"batched scorer requires softmax loss (model has {loss})")
+        self.model, self.device, self.batch = model, torch.device(device), batch
+        self.torch = torch
+        self.inp = torch.from_numpy(model.get_input_matrix()).to(self.device)
+        self.out = torch.from_numpy(model.get_output_matrix()).to(self.device)
+        self._parity(parity_n)
+
+    def _ids(self, text: str) -> list[int]:
+        ids: list[int] = []
+        for w in self.model.get_line(text)[0]:
+            ids.extend(self.model.get_subwords(w)[1])
+        return ids
+
+    def predict_labels(self, texts: list[str]) -> list[str]:
+        """Top-1 fastText labels (`__label__` prefix included), batched."""
+        torch = self.torch
+        labels = self.model.get_labels()
+        out: list[str] = []
+        for t0 in range(0, len(texts), self.batch):
+            part = texts[t0 : t0 + self.batch]
+            rows = [self._ids(t) for t in part]
+            counts = torch.tensor([len(r) for r in rows], device=self.device)
+            flat = torch.tensor([i for r in rows for i in r], dtype=torch.long,
+                                device=self.device)
+            seg = torch.repeat_interleave(
+                torch.arange(len(part), device=self.device), counts)
+            vecs = torch.zeros((len(part), self.inp.shape[1]), device=self.device)
+            vecs.index_add_(0, seg, self.inp.index_select(0, flat))
+            vecs /= counts.clamp(min=1).to(torch.float32).unsqueeze(1)
+            idx = (vecs @ self.out.T).argmax(dim=1).tolist()
+            out.extend(labels[i] for i in idx)
+        return out
+
+    def _parity(self, n: int) -> None:
+        probes = [
+            "Привет мир, как дела", "Да", "Қазақстан Республикасының Конституциясы",
+            "Hello world this is a test", "Bonjour tout le monde", "шок",
+            "Ен evening duck नमस्ते 你好 مرحبا", "…", "42 42 42",
+            "Özbekçe tili dünyada", "Монгол улсын үндсэн хууль", "јужни словенски",
+        ]
+        texts = [p for _ in range(max(1, n // len(probes))) for p in probes]
+        mine = self.predict_labels(texts)
+        ref = [self.model.predict(t, k=1)[0][0] for t in texts]
+        agree = sum(int(a == b) for a, b in zip(mine, ref))
+        if agree < len(texts) * (1 - 1e-3):
+            raise SystemExit(
+                f"batched scorer failed parity vs fasttext.predict ({agree}/{len(texts)})")
+        print(f"parity: {agree}/{len(texts)} vs fasttext.predict", file=sys.stderr)
+
+
 def fragments(rows: list[tuple[str, str]], n: int) -> list[tuple[str, str]]:
     out = []
     for lang, text in rows:
@@ -80,19 +151,20 @@ def fragments(rows: list[tuple[str, str]], n: int) -> list[tuple[str, str]]:
     return out
 
 
-def ladder(model, rows: list[tuple[str, str]], n: int, label_to_our: dict[str, str]) -> tuple[float, int, Counter, Counter]:
+def ladder(predict_labels, rows: list[tuple[str, str]], n: int,
+           label_to_our: dict[str, str]) -> tuple[float, int, Counter, Counter]:
     per_lang_correct: Counter = Counter()
     per_lang_total: Counter = Counter()
     correct = 0
-    total = 0
-    for lang, frag in fragments(rows, n):
-        labels, _probs = model.predict(frag, k=1)
-        pred = label_to_our.get(labels[0].removeprefix("__label__")) if labels else None
-        total += 1
+    frags = fragments(rows, n)
+    preds = predict_labels([f for _, f in frags])
+    for (lang, _frag), label in zip(frags, preds):
+        pred = label_to_our.get(label.removeprefix("__label__"))
         per_lang_total[lang] += 1
         if pred == lang:
             correct += 1
             per_lang_correct[lang] += 1
+    total = len(frags)
     acc = correct / total if total else float("nan")
     return acc, total, per_lang_correct, per_lang_total
 
@@ -104,6 +176,9 @@ def populate(ap: argparse.ArgumentParser) -> None:
                     help="label vocabulary of the model (lid.176 = ISO 639-1, glotlid = FLORES-200)")
     ap.add_argument("--skip-ladder", action="store_true",
                     help="text-level accuracy only (for slow models / big files)")
+    ap.add_argument("--device", default="cpu",
+                    help="cpu = fastText's per-row predict; mps/cuda = batched "
+                         "torch scorer on the accelerator (parity-checked)")
 
 
 def run(args: argparse.Namespace) -> None:
@@ -133,9 +208,16 @@ def run(args: argparse.Namespace) -> None:
                     rows.append((code, text))
     print(f"eval samples (supported subset): {len(rows)}")
 
+    if args.device == "cpu":
+        def predict_labels(texts: list[str]) -> list[str]:
+            return [model.predict(t, k=1)[0][0] for t in texts]
+    else:
+        scorer = BatchedScorer(model, args.device)
+        predict_labels = scorer.predict_labels
+
     if not args.skip_ladder:
-        ladder_n = functools.partial(ladder, model, rows, label_to_our=supported)
-        rungs = {name: ladder_n(n) for n, name in ((1, "word"), (2, "pair"), (3, "triple"))}
+        rungs = {name: ladder(predict_labels, rows, n, supported)
+                 for n, name in ((1, "word"), (2, "pair"), (3, "triple"))}
         for name, (acc, total, _, _) in rungs.items():
             print(f"{name:>6}: {acc:.2%}  (n = {total})")
     else:
@@ -143,13 +225,13 @@ def run(args: argparse.Namespace) -> None:
 
     # Text rung: the whole sample (not word windows), plus length buckets
     # matching `assess` / lid-bench (chars: <=20 / 21-100 / >100).
+    preds = predict_labels([t for _, t in rows])
     correct = total = 0
     per_correct: Counter = Counter()
     per_total: Counter = Counter()
     bucket = {"≤20": [0, 0], "21-100": [0, 0], ">100": [0, 0]}
-    for lang, text in rows:
-        labels, _probs = model.predict(text, k=1)
-        pred = supported.get(labels[0].removeprefix("__label__")) if labels else None
+    for (lang, text), label in zip(rows, preds):
+        pred = supported.get(label.removeprefix("__label__"))
         total += 1
         per_total[lang] += 1
         n = len(text)
@@ -162,7 +244,8 @@ def run(args: argparse.Namespace) -> None:
     rungs["text"] = (correct / total if total else float("nan"), total, per_correct, per_total)
     print(f"  text: {rungs['text'][0]:.2%}  (n = {rungs['text'][1]})")
     for name, (ok, n) in bucket.items():
-        print(f"    {name:>6}: {ok / n:.2%}  (n = {n})")
+        acc = f"{ok / n:.2%}" if n else "—"
+        print(f"    {name:>6}: {acc}  (n = {n})")
 
     if not args.skip_ladder:
         print("\nper-language (word acc / text acc, worst word first):")
