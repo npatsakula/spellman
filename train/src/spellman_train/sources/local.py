@@ -50,7 +50,8 @@ class LocalCsv(Dataset):
 @dataclass
 class LocalJsonl(Dataset):
     """A pre-labeled cache-style file ({"lang","text"} rows) — the output
-    side of offline tools like hard_negatives.py that carry their own labels:
+    side of offline tools (`spellman-train hard-negatives`) that carry
+    their own labels:
 
         --source jsonl:path=cache/hard_negatives.jsonl
     """

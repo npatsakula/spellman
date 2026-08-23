@@ -110,7 +110,7 @@ def run(args: argparse.Namespace) -> None:
     import fasttext
 
     candidates = LABEL_SETS[args.labels]
-    model = fasttext.load_model(str(args.model))
+    model = fasttext.load_model(str(ensure_model(args.model)))
 
     # Which of our languages can this model express?
     labels = {l.removeprefix("__label__") for l in model.get_labels()}

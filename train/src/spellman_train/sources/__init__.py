@@ -25,9 +25,9 @@ import json
 from abc import ABC, abstractmethod
 from dataclasses import asdict, fields, is_dataclass
 from pathlib import Path
-from typing import Callable, Iterator, Type
+from typing import Callable, Iterator
 
-from spellman_train.paths import CACHE_DIR, TRAIN_DIR
+from spellman_train.paths import CACHE_DIR
 
 _REGISTRY: dict[str, type[Dataset]] = {}
 

@@ -21,10 +21,9 @@ import re
 import time
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterator
 
-from . import CACHE_DIR, Dataset, register
+from . import Dataset, register
 
 _SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+|\n+")
 _START = re.compile(r"\*\*\*\s*START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK.*?\*\*\*", re.I)
@@ -72,8 +71,6 @@ class Gutenberg(Dataset):
 
     def samples(self) -> Iterator[tuple[str, str]]:
         import random
-
-        from tqdm import tqdm
 
         lang_map = {"ru": "rus", "fr": "fra", "de": "deu", "en": "eng"}
         lang = lang_map.get(self.langs)

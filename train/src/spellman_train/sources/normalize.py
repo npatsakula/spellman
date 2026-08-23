@@ -25,7 +25,6 @@ language here must rebuild everything keyed on its lemmas.
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 from typing import Callable
 
 from spellman_train.paths import TRAIN_DIR
@@ -56,7 +55,7 @@ REGISTRY: dict[str, str] = {
     "chv": "stem-corpus",
     "sah": "stem-corpus",
     "tyv": "stem-corpus",
-    # lttoolbox FST analyzer (prepare_apertium.py) — Macedonian is the
+    # lttoolbox FST analyzer (spellman-train prepare-apertium) — Macedonian is the
     # one language only Apertium covers (the oss repo is a 757-entry
     # stub, everything else is HFST .lexc, not lttoolbox):
     "mkd": "apertium:mkd",
@@ -250,7 +249,7 @@ def _build_stem_corpus(lang: str) -> Callable[[list[str]], list[str]]:
 
 
 def _build_apertium(lang: str) -> Callable[[list[str]], list[str]]:
-    """lttoolbox FST analyzer (see prepare_apertium.py): one lt-proc
+    """lttoolbox FST analyzer (see `spellman-train prepare-apertium`): one lt-proc
     subprocess per bulk pass, unique tokens on stdin, first analysis's
     lemma (text before the first '<') as the key. Unknown words come
     back as *surface and fall back to identity — the same policy as the

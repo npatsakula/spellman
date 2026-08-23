@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import tarfile
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterator
 
 from . import CACHE_DIR, Dataset, cyrillic_ratio, download_with_retries, register

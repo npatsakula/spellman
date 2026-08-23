@@ -39,7 +39,6 @@ from spellman_train.paths import CACHE_DIR, MODEL_DIR
 MIN_TOKENS = 8  # ultra-short rows carry too little signal to judge by
 
 CYRILLIC_LANGS = set(LANGUAGES[:21])
-LATIN_LANGS = {"eng", "spa", "fra", "por", "deu"}
 LID176_TO_OURS = {"en": "eng", "es": "spa", "fr": "fra", "pt": "por", "de": "deu"}
 
 # Close-language groups: a confident prediction INSIDE the gold language's

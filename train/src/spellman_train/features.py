@@ -16,9 +16,7 @@ Parity notes:
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from pathlib import Path
 
 MASK32 = 0xFFFFFFFF
 MASK64 = 0xFFFFFFFFFFFFFFFF
@@ -31,7 +29,7 @@ CP_MASK = (1 << CP_BITS) - 1
 
 # Token-class canonicalization sentinels (private-use codepoints; a
 # canonicalized word packs as [BOW, sentinel, EOW]). Must match
-# src/features.rs.
+# crates/spellman-detector/src/features.rs.
 SENTINEL_URL = 0xE001
 SENTINEL_EMAIL = 0xE002
 SENTINEL_MENTION = 0xE003
@@ -148,20 +146,6 @@ def bucket_of(key: int, log2_d: int, hash_id: str, seed: int = DEFAULT_SEED) -> 
 # ---------------------------------------------------------------------------
 # N-gram extraction (must match Rust token_keys / bucket_tokens exactly)
 # ---------------------------------------------------------------------------
-
-
-def pack_ngram(chars: list[int]) -> int:
-    """Reference per-window packing (kept for tests/training clarity).
-
-    The rolling implementation in [`token_keys`] produces the identical
-    multiset of keys; only emission order differs (position-major there,
-    n-major here).
-    """
-    key = 0
-    for c in chars:
-        key = ((key << CP_BITS) | (c & CP_MASK)) & MASK64
-    return key
-
 
 _MASKS = {1: (1 << 21) - 1, 2: (1 << 42) - 1, 3: (1 << 63) - 1}
 # Per-n domain-separation salt, XORed into every key: key ^ (n * ODD).
@@ -390,7 +374,6 @@ def bucket_tokens_flat(
         mention = (first == 0x40) & (lens > 1)
         has_at = np.add.reduceat(cps == 0x40, starts)
         has_digit = np.add.reduceat((cps >= 0x30) & (cps <= 0x39), starts)
-        non_ascii = np.add.reduceat(cps > 0x7F, starts)
 
         # URL prefix, case-insensitive, on the first 8 codepoints.
         take = np.minimum(lens, 8)
@@ -410,7 +393,6 @@ def bucket_tokens_flat(
             | pref([0x68, 0x74, 0x74, 0x70, 0x73, 0x3A, 0x2F, 0x2F])  # https://
             | pref([0x77, 0x77, 0x77, 0x2E])                        # www.
         )
-        is_num = has_digit & ~non_ascii
 
         flagged = has_at | np.add.reduceat(cps == 0x2E, starts) | has_digit | mention | is_url
         sentinels = np.zeros(len(starts), dtype=np.uint32)
@@ -522,7 +504,9 @@ def bucket_tokens_flat(
 
 def assert_batch_parity(texts: list[str], log2_d: int = 17) -> None:
     """Self-test: bucket_tokens_flat must reproduce bucket_tokens exactly,
-    including encounter order, for every text given."""
+    including encounter order, for every text given. Runs as part of
+    `spellman-train gen-fixtures`, keeping the vectorized training path
+    pinned to the scalar contract alongside the Rust fixture."""
     buckets, negs, offsets = bucket_tokens_flat(texts, log2_d)
     for i, t in enumerate(texts):
         ref = bucket_tokens(t, log2_d)
@@ -531,13 +515,9 @@ def assert_batch_parity(texts: list[str], log2_d: int = 17) -> None:
         assert list(map(bool, negs[sl])) == [n for _, n in ref], f"neg mismatch on {t!r}"
 
 
-def to_signed_index(bucket: int, neg: bool, d: int) -> int:
-    """Fold the sign into the index: [0, D] is +P, [D+1, 2D+1] is -P."""
-    return bucket if not neg else d + 1 + bucket
-
-
 # ---------------------------------------------------------------------------
-# Shared language inventory (must match src/lang.rs column order)
+# Shared language inventory (must match crates/spellman-language/src/lib.rs
+# column order)
 # ---------------------------------------------------------------------------
 
 LANGUAGES: list[str] = [

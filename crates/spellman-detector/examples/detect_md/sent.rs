@@ -24,6 +24,11 @@
 //! neighbors is the same sweep policy (attribution tails rejoin their
 //! sentence), not a detection concern. Known cost: two-plus-letter
 //! abbreviations (`См.`, `стр.`) split when followed by a space.
+//!
+//! Unit tests live below (`cargo test --example detect_md`); examples
+//! are outside plain `cargo test`'s target set, which is deliberate —
+//! the splitter is sweep policy, not part of the crate's detection
+//! surface.
 
 /// Sentence terminators; a maximal run of these plus trailing closers
 /// forms a boundary when followed by whitespace or end of line.
@@ -138,4 +143,106 @@ pub fn glue_short(pieces: Vec<String>, min_chars: usize) -> Vec<String> {
         out.push(piece);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{glue_short, split_line};
+
+    fn parts(line: &str) -> Vec<String> {
+        split_line(line).iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn plain_sentences() {
+        assert_eq!(
+            parts("Однажды в студёную зимнюю пору. Я из лесу вышел."),
+            ["Однажды в студёную зимнюю пору.", "Я из лесу вышел."]
+        );
+    }
+
+    #[test]
+    fn dialogue_attribution_stays_whole() {
+        // comma + dash mid-sentence is attribution, not a turn
+        assert_eq!(
+            parts("— Моя жена, — продолжал князь Андрей, — прекрасная женщина."),
+            ["— Моя жена, — продолжал князь Андрей, — прекрасная женщина."]
+        );
+        // terminator before a dash = new dialogue turn
+        assert_eq!(parts("— Нет, — сказал он. — Да."), ["— Нет, — сказал он.", "— Да."]);
+        // question + closing quote + dash attribution: two pieces
+        assert_eq!(
+            parts("«Эй, кто там?» — крикнул вахтёр"),
+            ["«Эй, кто там?»", "— крикнул вахтёр"]
+        );
+    }
+
+    #[test]
+    fn initials_never_split() {
+        assert_eq!(
+            parts("Л. Н. Толстой родился в 1828 г. и умер в 1910 г."),
+            ["Л. Н. Толстой родился в 1828 г. и умер в 1910 г."]
+        );
+        assert_eq!(parts("Роман написан Толстым."), ["Роман написан Толстым."]);
+    }
+
+    #[test]
+    fn decimals_and_hosts_stay_whole() {
+        assert_eq!(parts("Цена 3.5 рубля. Дорого!"), ["Цена 3.5 рубля.", "Дорого!"]);
+        assert_eq!(
+            parts("Сайт example.com/abc открыт. Позже."),
+            ["Сайт example.com/abc открыт.", "Позже."]
+        );
+    }
+
+    #[test]
+    fn terminator_runs_and_closers() {
+        assert_eq!(parts("Что?.. О!"), ["Что?..", "О!"]);
+        assert_eq!(parts("«Да!» — сказал он."), ["«Да!»", "— сказал он."]);
+        assert_eq!(parts("(Приказ № 5.) Всё."), ["(Приказ № 5.)", "Всё."]);
+        assert_eq!(parts("Правда?! Как же!"), ["Правда?!", "Как же!"]);
+    }
+
+    #[test]
+    fn no_terminator_is_one_piece() {
+        assert_eq!(parts("Просто строка без конца"), ["Просто строка без конца"]);
+        assert!(split_line("   ").is_empty());
+        assert!(split_line("").is_empty());
+    }
+
+    #[test]
+    fn glue_joins_attribution_tails() {
+        // the classic: quote + tail recombine into one evidential unit
+        let pieces = parts("«Да!» — сказал он.");
+        assert_eq!(glue_short(pieces, 20), ["«Да!» — сказал он."]);
+        // question + closer + attribution works the same
+        let pieces = parts("«Эй, кто там?» — крикнул вахтёр");
+        assert_eq!(glue_short(pieces, 20), ["«Эй, кто там?» — крикнул вахтёр"]);
+    }
+
+    #[test]
+    fn glue_leaves_rapid_dialogue_alone() {
+        // three speakers, no closers: NOT one sentence; the length filter
+        // drops these (measured: gluing them resurrected 1.8k tyv picks)
+        let pieces = vec![
+            "— Нет.".to_string(),
+            "— Да.".to_string(),
+            "— Отвяжись.".to_string(),
+        ];
+        assert_eq!(glue_short(pieces.clone(), 20), pieces);
+    }
+
+    #[test]
+    fn glue_ignores_short_without_closer_before_it() {
+        // dash fragment whose predecessor ends in a plain terminator: a new
+        // dialogue turn, not an attribution
+        let pieces = parts("Он замолчал. — Ну и что.");
+        assert_eq!(glue_short(pieces.clone(), 20), pieces);
+    }
+
+    #[test]
+    fn glue_isolated_short_is_kept_for_the_filter() {
+        // no neighbor: nothing to glue to, the caller's min-chars filter drops it
+        assert_eq!(glue_short(vec!["— Нет.".to_string()], 20), ["— Нет."]);
+    }
 }

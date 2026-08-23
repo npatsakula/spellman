@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 from spellman_train.features import (
     DEFAULT_SEED,
     FeatureConfig,
     LANGUAGES,
+    assert_batch_parity,
     bucket_tokens,
     load_lang_examples,
     token_keys,
@@ -41,6 +41,9 @@ def run(args: argparse.Namespace) -> None:
     cases = []
     examples = load_lang_examples()
     texts = [examples[code] for code in LANGUAGES if code in examples]
+    # The vectorized batch path (what training actually calls) must stay
+    # bit-identical to the scalar reference the fixture pins down.
+    assert_batch_parity(texts)
     texts += [examples[k] for k in ("mixed", "short", "punct")]
     texts += [examples[k] for k in ("wild_url", "wild_email", "wild_mention", "wild_num", "wild_hashtag", "wild_abbrev", "wild_HTTP", "wild_mixed")]
 

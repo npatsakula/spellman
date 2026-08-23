@@ -23,7 +23,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from . import TRAIN_DIR, Dataset, register
+from spellman_train.paths import TRAIN_DIR
+
+from . import Dataset, register
 
 # spellman code -> Tatoeba code (ISO 639-3; identical except where noted).
 TATOEBA_CODES = {

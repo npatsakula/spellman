@@ -1,6 +1,6 @@
 //! int8 vs f16 bulk-path performance probe (same gather+sum graph shape).
 //!
-//! The accuracy side is settled (`train/quantize_eval.py`): per-column
+//! The accuracy side is settled (the `spellman-train quantize` rewrite): per-column
 //! symmetric int8 is lossless to −0.01pp, and per-column scales factor out
 //! of the K-sum (`logit_c = s_c · Σ ±q`), so the int8 graph stays a pure
 //! gather + cast(i8→i16→i32, the lattice allows no direct i8→i32) + sum,

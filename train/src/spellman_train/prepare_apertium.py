@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 from spellman_train.paths import CACHE_DIR
@@ -37,7 +36,7 @@ LANGS: dict[str, tuple[str, str, str | None]] = {
 }
 
 
-def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None) -> None:
+def sh(cmd: list[str], cwd: Path | None = None, env: dict | None = None) -> None:
     print(f"  $ {' '.join(cmd)}", flush=True)
     subprocess.run(cmd, cwd=cwd, env=env, check=True)
 
@@ -56,7 +55,7 @@ def ensure_lttoolbox() -> Path:
     src = APERTIUM_DIR / "src" / "lttoolbox"
     src.parent.mkdir(parents=True, exist_ok=True)
     if not src.exists():
-        run(["git", "clone", "--depth", "1",
+        sh(["git", "clone", "--depth", "1",
              "https://github.com/apertium/lttoolbox", str(src)])
     env = {
         **os.environ,
@@ -64,11 +63,11 @@ def ensure_lttoolbox() -> Path:
         "CMAKE_PREFIX_PATH": f"{brew('utf8cpp')};{brew('icu4c')}",
     }
     build = src / "build"
-    run(["cmake", "-B", str(build), "-S", str(src),
+    sh(["cmake", "-B", str(build), "-S", str(src),
          "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_INSTALL_PREFIX={prefix}"],
         env=env)
-    run(["cmake", "--build", str(build), "--parallel", "6"], env=env)
-    run(["cmake", "--install", str(build)], env=env)
+    sh(["cmake", "--build", str(build), "--parallel", "6"], env=env)
+    sh(["cmake", "--install", str(build)], env=env)
     return prefix
 
 
@@ -77,13 +76,13 @@ def build_lang(lang: str, prefix: Path) -> Path:
     src = APERTIUM_DIR / "src" / repo
     if not src.exists():
         src.parent.mkdir(parents=True, exist_ok=True)
-        run(["git", "clone", "--depth", "1",
+        sh(["git", "clone", "--depth", "1",
              f"https://github.com/apertium/{repo}", str(src)])
     out = APERTIUM_DIR / f"{lang}.automorf.bin"
     cmd = [str(prefix / "bin" / "lt-comp"), "-j", "lr", str(src / dix), str(out)]
     if acx and (src / acx).exists():
         cmd.append(str(src / acx))
-    run(cmd, env={**os.environ, "DYLD_LIBRARY_PATH": str(prefix / "lib")})
+    sh(cmd, env={**os.environ, "DYLD_LIBRARY_PATH": str(prefix / "lib")})
     rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
                          cwd=src, capture_output=True, text=True).stdout.strip()
     print(f"  {lang}: {out.name} ({out.stat().st_size // 1024}KB, {repo}@{rev})", flush=True)
