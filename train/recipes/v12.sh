@@ -15,7 +15,8 @@
 #   un-pulled lever (rus is not in their twin groups).
 # GoURMET (OPUS) was dropped: object.pouta.csc.fi unreachable from our
 #   network — optional re-add (~23k ky pairs) if reachable.
-# Run from train/:  uv sync && bash recipes/v12.sh
+# Cold machine: uv sync && bash recipes/v12-pools.sh && bash recipes/v12.sh
+# (pools first: the diverse lanes pin cache files this recipe does not build)
 # (first run downloads everything; ~2.5GB MADLAD + HPLT/Glot500 streams)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -39,7 +40,7 @@ uv run spellman-train mix --out data/v12 \
   --source opus:corpus=translatewiki,src=ce,tgt=en,lang=che \
   --source hf:repo=NM-development/nmd-ce-ru-171k-v0,column=ce,lang=che,docs=999999,per_doc=1,streaming=False \
   --source csv:path=rusentitweet_train.csv,column=text,lang=rus \
-  --source jsonl:path=cache/hard_negatives.jsonl \
+  --source jsonl:path=seeds/hard_negatives.jsonl \
   --source ukr_tweets:limit=50000 \
   --source mn_social \
   --source kazsandra \
@@ -82,17 +83,17 @@ uv run spellman-train mix --out data/v12 \
   --source diverse:lang=ukr,pool_repo=HuggingFaceFW/fineweb-2,pool_config=ukr_Cyrl,pool_docs=300000,budget=20000 \
   --source hf:repo=YShynkarov/COSMUS,column=document_content,where=language_manual=russian,lang=rus,raw=True,docs=0,streaming=False,max_chars=512 \
   --source csv:path=rusentitweet_train.csv,column=text,lang=rus,min_chars=3,max_chars=19 \
-  --source jsonl:path=cache/relabel_rus.jsonl \
+  --source jsonl:path=seeds/relabel_rus.jsonl \
   --source diverse:lang=rus,pool_file=cache/wikisource-5da9d07b30.jsonl,budget=6000 \
   --source diverse:lang=kaz,pool_file=cache/kazsandra-eb6571e000.jsonl,budget=16000 \
   --source 'diverse:lang=kir,pool_repo=HPLT/HPLT2.0_cleaned,pool_config=kir_Cyrl,pool_docs=200000,budget=16000,pool_no_chars=ҕһ' \
   --source diverse:lang=tgk,pool_file=cache/hf-b407fce95d.jsonl,budget=16000 \
-  --source diverse:lang=uzn,pool_file=cache/hf-5711c74502.jsonl,budget=16000 \
-  --source diverse:lang=tat,pool_file=cache/hf-eb368f46e1.jsonl,budget=16000 \
-  --source diverse:lang=bak,pool_file=cache/hf-05c948e9d7.jsonl,budget=16000 \
-  --source diverse:lang=chv,pool_file=cache/hf-4bb695f530.jsonl,budget=16000 \
-  --source diverse:lang=sah,pool_file=cache/hf-fc628b434a.jsonl,budget=16000 \
-  --source diverse:lang=tyv,pool_file=cache/hf-b3c61b0e5a.jsonl,budget=16000 \
+  --source diverse:lang=uzn,pool_file=cache/hf-1f351fe715.jsonl,budget=16000 \
+  --source diverse:lang=tat,pool_file=cache/hf-c2a1d6fbcb.jsonl,budget=16000 \
+  --source diverse:lang=bak,pool_file=cache/hf-b242f3ef58.jsonl,budget=16000 \
+  --source diverse:lang=chv,pool_file=cache/hf-7e962c6753.jsonl,budget=16000 \
+  --source diverse:lang=sah,pool_file=cache/hf-0bea6ddfdd.jsonl,budget=16000 \
+  --source diverse:lang=tyv,pool_file=cache/hf-cd00eaba11.jsonl,budget=16000 \
   --source hf:repo=allenai/MADLAD-400,files=data/ce/ce_clean_0000.jsonl.gz,lang=che,raw=True,docs=0,streaming=False,max_chars=512,cyr=0.6 \
   --source hf:repo=allenai/MADLAD-400,files=data/ce/ce_noisy_0000.jsonl.gz,lang=che,raw=True,docs=0,streaming=False,max_chars=512,cyr=0.6 \
   --source hf:repo=wikimedia/wikipedia,config=20231101.ce,lang=che,docs=30000,per_doc=3 \
