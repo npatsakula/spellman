@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 description = "Cyrillic-optimized language detection: hashed char n-grams, folded fastText-style model, svod JIT bulk inference"
 license = "MIT"
+repository = "https://github.com/npatsakula/spellman"
+readme = "README.md"
+keywords = ["language-detection", "language-identification", "lid", "cyrillic", "spellman"]
+categories = ["text-processing", "localization"]
+# fixtures/hash_vectors.json is required by tests/hash_vectors.rs.
+include = ["src/**", "tests/**", "benches/**", "examples/**", "fixtures/**", "README.md"]
 
 [dependencies]
 spellman-language = { path = "../spellman-language" }

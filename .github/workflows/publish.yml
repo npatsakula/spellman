@@ -1,0 +1,107 @@
+name: Publish
+
+# Publishing to crates.io is driven by GitHub Releases: creating a release
+# (web UI, `gh release create vX.Y.Z -t "X.Y.Z"`, or the tag→release
+# automation of your choice) is the publish button. Re-publishing a release
+# is safe: crate versions already on crates.io are detected and skipped, so
+# re-running this workflow is idempotent.
+#
+# BLOCKED — spellman-detector and spellman-cli are NOT published yet:
+# crates.io forbids git dependencies, and both depend on svod
+# (github.com/npatsakula/svod) via git. The svod crates ARE on crates.io,
+# but at 0.1.0-alpha.3, which predates APIs spellman-detector uses
+# (svod_model::state::load_safetensors_dir, svod_device Buffer::
+# copyout_prefix; verified 2026-08-20). Once svod publishes a release that
+# matches its git main, no git->version rewrite is needed — cargo strips
+# git/path specs from packaged manifests automatically when a `version`
+# requirement is present. Enable by:
+#   1. adding `version = "<published svod version>"` next to the git specs
+#      in spellman-detector's Cargo.toml (and `version = "0.1.0"` next to
+#      the spellman-language path dep, likewise in spellman-cli), then
+#   2. appending spellman-detector and spellman-cli to PUBLISH_CRATES
+#      below (dependency order matters: language -> detector -> cli).
+#
+# Required secret the repository owner must add once (Settings → Secrets and
+# variables → Actions): CARGO_REGISTRY_TOKEN — a crates.io API token with
+# the publish-new scope. Without it this workflow fails at the publish step.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write # upload .crate assets to the release
+
+concurrency:
+  group: publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  # Ordered publish list, dependencies first. Only crates whose dependency
+  # graph is registry-only — see the BLOCKED note above for the rest.
+  PUBLISH_CRATES: spellman-language
+
+jobs:
+  crates-io:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # spellman-language is dependency-free, so a plain stable toolchain is
+      # all the verification it needs. The full workspace (clippy, nextest,
+      # the svod-requiring crates through nix) is already gated by ci.yml on
+      # every push; this deliberately does not repeat it — and never runs
+      # cargo fmt or darwin nix.
+      - name: Verify the crates being published
+        run: |
+          cargo build --release -p spellman-language
+          cargo test -p spellman-language
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          for crate in $PUBLISH_CRATES; do
+            version=$(cargo pkgid -p "$crate" | sed 's/.*[#@]//')
+            echo "== $crate $version"
+
+            # Produce the .crate file up front so the release asset exists
+            # even when the upload below is skipped as already published.
+            # The verification build of the packaged file set runs here too.
+            cargo package -p "$crate"
+
+            # Idempotency: a version already on crates.io is skipped.
+            if [ -n "$version" ] && curl -sf -A "spellman-publish-workflow" \
+              "https://crates.io/api/v1/crates/$crate/$version" -o /dev/null; then
+              echo "::notice::$crate $version is already on crates.io — skipping upload"
+              continue
+            fi
+
+            echo "::group::cargo publish -p $crate"
+            if output=$(cargo publish -p "$crate" --token "$CARGO_REGISTRY_TOKEN" 2>&1); then
+              echo "$output"
+              echo "::notice::published $crate $version"
+            else
+              status=$?
+              echo "$output"
+              # Lost a race with a concurrent publish — treat as success.
+              if echo "$output" | grep -qiE 'already (exists|uploaded|published)'; then
+                echo "::notice::$crate $version was already published — skipping"
+              else
+                echo "::error::cargo publish failed for $crate"
+                exit "$status"
+              fi
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Attach .crate packages to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l target/package/*.crate
+          gh release upload "${{ github.event.release.tag_name }}" \
+            target/package/*.crate --clobber

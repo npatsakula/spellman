@@ -72,6 +72,7 @@ mod tests {
         let lang: Lang = "kaz".parse().unwrap();
         assert_eq!(lang.name_in(Lang::Rus), "Казахский");
         assert_eq!(lang.script(), Script::Cyrillic);
+        assert_eq!(lang.flag(), "🇰🇿");
         assert_eq!(char_script('қ'), Some(Script::Cyrillic));
         assert_eq!(Lang::ALL.len(), NUM_LANGS);
         let Err(err) = "nope".parse::<Lang>() else {

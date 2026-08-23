@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "spellman CLI: detect (stdin → ISO 639-3), eval, bench"
 license = "MIT"
+repository = "https://github.com/npatsakula/spellman"
+readme = "README.md"
+keywords = ["language-detection", "cli", "lid", "spellman"]
+categories = ["command-line-utilities", "text-processing"]
+include = ["src/**", "README.md"]
 
 [[bin]]
 name = "spellman"
