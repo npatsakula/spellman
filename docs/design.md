@@ -27,8 +27,10 @@ rebuilt on every layer: features, hashing, model capacity, and inference.
 
 `spellman-language` is a dependency-free crate: one `languages!` macro table
 defines every language — variant name (its ISO 639-3 code, also the
-model-column order), ISO 639-1, NLLB-200, and Whisper codes where they
-exist, English name, localized names, primary script. Everything else is
+model-column order), ISO 639-1 and NLLB-200 codes where they exist, English
+name, localized names, primary script, flag emoji (Whisper codes are
+deliberately not stored: for every covered language Whisper's code IS the
+ISO 639-1 code). Everything else is
 generated; adding a language is adding a row.
 
 Routing happens before any model runs (`crates/spellman-detector/src/route.rs`):

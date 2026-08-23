@@ -5,7 +5,7 @@
 //! (closely-related Cyrillic pairs: ru/be/uk, bg/mk/sr, kk/ky/tt/ba).
 //!
 //! The language inventory itself lives in the `spellman-language` crate:
-//! one macro table holds the ISO 639-1/639-3, NLLB-200 and Whisper codes,
+//! one macro table holds the ISO 639-1/639-3 and NLLB-200 codes,
 //! names and scripts, and this crate re-exports [`Lang`] from it.
 //!
 //! Architecture:

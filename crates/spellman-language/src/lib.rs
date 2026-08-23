@@ -1,8 +1,8 @@
 //! spellman-language — the language inventory shared by the spellman stack.
 //!
 //! One macro table ([`languages!`]) defines every language: the variant
-//! (named by its ISO 639-3 code), ISO 639-1 / NLLB-200 / Whisper codes where
-//! they exist, the English name, the primary script, localized names, and a
+//! (named by its ISO 639-3 code), ISO 639-1 / NLLB-200 codes where they
+//! exist, the English name, the primary script, localized names, and a
 //! flag emoji.
 //! `Lang`, [`Lang::ALL`] and every accessor are generated from that table;
 //! adding a language is adding one row. Variant order is load-bearing: it is
@@ -52,7 +52,6 @@ pub const fn char_script(c: char) -> Option<Script> {
 ///         iso1:    Some("ru"),
 ///         iso3:    "rus",
 ///         nllb:    Some("rus_Cyrl"),
-///         whisper: Some("russian"),
 ///         name:    "Russian",
 ///         script:  Script::Cyrillic,
 ///         flag:    "🇷🇺",
@@ -61,8 +60,11 @@ pub const fn char_script(c: char) -> Option<Script> {
 /// }
 /// ```
 ///
-/// `iso1` / `nllb` / `whisper` are `Option<&'static str>` — languages the
-/// standard doesn't cover carry `None`. `names` maps a display language to a
+/// `iso1` / `nllb` are `Option<&'static str>` — languages the
+/// standard doesn't cover carry `None`. (Whisper codes are deliberately
+/// not a column: for every language of this inventory that Whisper
+/// supports, its code IS the ISO 639-1 code — use [`Lang::iso_639_1`].)
+/// `names` maps a display language to a
 /// localized name (empty `{}` when none); unknown display languages fall
 /// back to the English `name`. `flag` is the flag emoji of the primary
 /// speaker country; languages that exist only as republic languages within
@@ -80,7 +82,6 @@ macro_rules! languages {
                 iso1:    $iso1:expr,
                 iso3:    $iso3:expr,
                 nllb:    $nllb:expr,
-                whisper: $whisper:expr,
                 name:    $name:expr,
                 script:  $script:expr,
                 flag:    $flag:expr,
@@ -129,11 +130,6 @@ macro_rules! languages {
                 match self { $(Lang::$variant => $nllb,)* }
             }
 
-            /// Whisper language token, when Whisper supports the language.
-            pub const fn whisper(self) -> Option<&'static str> {
-                match self { $(Lang::$variant => $whisper,)* }
-            }
-
             /// English name.
             pub const fn name(self) -> &'static str {
                 match self { $(Lang::$variant => $name,)* }
@@ -175,7 +171,6 @@ crate::languages! {
         iso1:    Some("ru"),
         iso3:    "rus",
         nllb:    Some("rus_Cyrl"),
-        whisper: Some("russian"),
         name:    "Russian",
         script:  Script::Cyrillic,
         flag:    "🇷🇺",
@@ -185,7 +180,6 @@ crate::languages! {
         iso1:    Some("uk"),
         iso3:    "ukr",
         nllb:    Some("ukr_Cyrl"),
-        whisper: Some("ukrainian"),
         name:    "Ukrainian",
         script:  Script::Cyrillic,
         flag:    "🇺🇦",
@@ -195,7 +189,6 @@ crate::languages! {
         iso1:    Some("be"),
         iso3:    "bel",
         nllb:    Some("bel_Cyrl"),
-        whisper: Some("belarusian"),
         name:    "Belarusian",
         script:  Script::Cyrillic,
         flag:    "🇧🇾",
@@ -205,7 +198,6 @@ crate::languages! {
         iso1:    Some("bg"),
         iso3:    "bul",
         nllb:    Some("bul_Cyrl"),
-        whisper: Some("bulgarian"),
         name:    "Bulgarian",
         script:  Script::Cyrillic,
         flag:    "🇧🇬",
@@ -215,7 +207,6 @@ crate::languages! {
         iso1:    Some("mk"),
         iso3:    "mkd",
         nllb:    Some("mkd_Cyrl"),
-        whisper: Some("macedonian"),
         name:    "Macedonian",
         script:  Script::Cyrillic,
         flag:    "🇲🇰",
@@ -225,7 +216,6 @@ crate::languages! {
         iso1:    Some("sr"),
         iso3:    "srp",
         nllb:    Some("srp_Cyrl"),
-        whisper: Some("serbian"),
         name:    "Serbian",
         script:  Script::Cyrillic,
         flag:    "🇷🇸",
@@ -235,7 +225,6 @@ crate::languages! {
         iso1:    Some("kk"),
         iso3:    "kaz",
         nllb:    Some("kaz_Cyrl"),
-        whisper: Some("kazakh"),
         name:    "Kazakh",
         script:  Script::Cyrillic,
         flag:    "🇰🇿",
@@ -245,8 +234,6 @@ crate::languages! {
         iso1:    Some("ky"),
         iso3:    "kir",
         nllb:    Some("kir_Cyrl"),
-        // Whisper's 99-language list has no Kyrgyz.
-        whisper: None,
         name:    "Kyrgyz",
         script:  Script::Cyrillic,
         flag:    "🇰🇬",
@@ -256,7 +243,6 @@ crate::languages! {
         iso1:    Some("tg"),
         iso3:    "tgk",
         nllb:    Some("tgk_Cyrl"),
-        whisper: Some("tajik"),
         name:    "Tajik",
         script:  Script::Cyrillic,
         flag:    "🇹🇯",
@@ -268,7 +254,6 @@ crate::languages! {
         // FLORES-200 ships Uzbek only as uzn_Latn; this row is the Cyrillic
         // variety, so the code stays script-qualified.
         nllb:    Some("uzn_Cyrl"),
-        whisper: Some("uzbek"),
         name:    "Uzbek",
         script:  Script::Cyrillic,
         flag:    "🇺🇿",
@@ -278,7 +263,6 @@ crate::languages! {
         iso1:    Some("tt"),
         iso3:    "tat",
         nllb:    Some("tat_Cyrl"),
-        whisper: Some("tatar"),
         name:    "Tatar",
         script:  Script::Cyrillic,
         // Tatarstan — republic within Russia.
@@ -289,7 +273,6 @@ crate::languages! {
         iso1:    Some("ba"),
         iso3:    "bak",
         nllb:    Some("bak_Cyrl"),
-        whisper: Some("bashkir"),
         name:    "Bashkir",
         script:  Script::Cyrillic,
         // Bashkortostan — republic within Russia.
@@ -300,7 +283,6 @@ crate::languages! {
         iso1:    Some("cv"),
         iso3:    "chv",
         nllb:    Some("chv_Cyrl"),
-        whisper: None,
         name:    "Chuvash",
         script:  Script::Cyrillic,
         // Chuvashia — republic within Russia.
@@ -311,7 +293,6 @@ crate::languages! {
         iso1:    None, // no ISO 639-1 code; "sah" is the 639-3 subtag
         iso3:    "sah",
         nllb:    Some("sah_Cyrl"),
-        whisper: None,
         name:    "Sakha",
         script:  Script::Cyrillic,
         // Sakha (Yakutia) — republic within Russia.
@@ -322,7 +303,6 @@ crate::languages! {
         iso1:    None, // no ISO 639-1 code
         iso3:    "tyv",
         nllb:    Some("tyv_Cyrl"),
-        whisper: None,
         name:    "Tuvan",
         script:  Script::Cyrillic,
         // Tuva — republic within Russia.
@@ -334,7 +314,6 @@ crate::languages! {
         iso1:    Some("mn"),
         iso3:    "mon",
         nllb:    Some("khk_Cyrl"),
-        whisper: Some("mongolian"),
         name:    "Mongolian",
         script:  Script::Cyrillic,
         flag:    "🇲🇳",
@@ -344,7 +323,6 @@ crate::languages! {
         iso1:    Some("os"),
         iso3:    "oss",
         nllb:    Some("oss_Cyrl"),
-        whisper: None,
         name:    "Ossetian",
         script:  Script::Cyrillic,
         // Most speakers live in North Ossetia–Alania (Russia), not Georgia.
@@ -355,7 +333,6 @@ crate::languages! {
         iso1:    Some("ce"),
         iso3:    "che",
         nllb:    Some("che_Cyrl"),
-        whisper: None,
         name:    "Chechen",
         script:  Script::Cyrillic,
         // Chechnya — republic within Russia.
@@ -366,7 +343,6 @@ crate::languages! {
         iso1:    None, // no ISO 639-1 code
         iso3:    "udm",
         nllb:    Some("udm_Cyrl"),
-        whisper: None,
         name:    "Udmurt",
         script:  Script::Cyrillic,
         // Udmurtia — republic within Russia.
@@ -379,7 +355,6 @@ crate::languages! {
         // Not covered by NLLB-200/FLORES-200; mari_Cyrl is the FLORES-style
         // code for Mari, not mhr_Cyrl.
         nllb:    Some("mari_Cyrl"),
-        whisper: None,
         name:    "Mari",
         script:  Script::Cyrillic,
         // Mari El — republic within Russia.
@@ -390,7 +365,6 @@ crate::languages! {
         iso1:    None, // Komi-Zyrian proper; "kv" is the Komi macrolanguage
         iso3:    "kpv",
         nllb:    Some("kpv_Cyrl"),
-        whisper: None,
         name:    "Komi",
         script:  Script::Cyrillic,
         // Komi Republic — republic within Russia.
@@ -402,7 +376,6 @@ crate::languages! {
         iso1:    Some("en"),
         iso3:    "eng",
         nllb:    Some("eng_Latn"),
-        whisper: Some("english"),
         name:    "English",
         script:  Script::Latin,
         flag:    "🇬🇧",
@@ -412,7 +385,6 @@ crate::languages! {
         iso1:    Some("es"),
         iso3:    "spa",
         nllb:    Some("spa_Latn"),
-        whisper: Some("spanish"),
         name:    "Spanish",
         script:  Script::Latin,
         flag:    "🇪🇸",
@@ -422,7 +394,6 @@ crate::languages! {
         iso1:    Some("fr"),
         iso3:    "fra",
         nllb:    Some("fra_Latn"),
-        whisper: Some("french"),
         name:    "French",
         script:  Script::Latin,
         flag:    "🇫🇷",
@@ -432,7 +403,6 @@ crate::languages! {
         iso1:    Some("pt"),
         iso3:    "por",
         nllb:    Some("por_Latn"),
-        whisper: Some("portuguese"),
         name:    "Portuguese",
         script:  Script::Latin,
         flag:    "🇵🇹",
@@ -442,7 +412,6 @@ crate::languages! {
         iso1:    Some("de"),
         iso3:    "deu",
         nllb:    Some("deu_Latn"),
-        whisper: Some("german"),
         name:    "German",
         script:  Script::Latin,
         flag:    "🇩🇪",
@@ -456,7 +425,6 @@ crate::languages! {
         // FLORES-200 uses zho_Hans; cmn_Hans is the individual-language
         // (Mandarin) equivalent.
         nllb:    Some("cmn_Hans"),
-        whisper: Some("chinese"),
         name:    "Mandarin",
         script:  Script::Han,
         flag:    "🇨🇳",
@@ -466,7 +434,6 @@ crate::languages! {
         iso1:    Some("ja"),
         iso3:    "jpn",
         nllb:    Some("jpn_Jpan"),
-        whisper: Some("japanese"),
         name:    "Japanese",
         script:  Script::Kana, // kana presence is the Japanese differentiator
         flag:    "🇯🇵",
@@ -476,7 +443,6 @@ crate::languages! {
         iso1:    Some("hi"),
         iso3:    "hin",
         nllb:    Some("hin_Deva"),
-        whisper: Some("hindi"),
         name:    "Hindi",
         script:  Script::Devanagari,
         flag:    "🇮🇳",
@@ -488,7 +454,6 @@ crate::languages! {
         // FLORES-200 uses arb_Arab (Standard Arabic); ara_Arab is the
         // macrolanguage-code equivalent.
         nllb:    Some("ara_Arab"),
-        whisper: Some("arabic"),
         name:    "Arabic",
         script:  Script::Arabic,
         flag:    "🇦🇪",
@@ -507,6 +472,28 @@ impl fmt::Display for UnknownLang {
 }
 
 impl std::error::Error for UnknownLang {}
+
+impl Lang {
+    /// Parse from an ISO 639-1 code (`"ru"`), case-insensitively.
+    ///
+    /// Languages without a 639-1 code (sah, tyv, udm, mhr, kpv) never
+    /// match — use [`Lang::from_str`] (ISO 639-3) for those.
+    pub fn from_iso_639_1(code: &str) -> Option<Lang> {
+        Lang::ALL.iter().copied().find(|lang| {
+            lang.iso_639_1()
+                .is_some_and(|c| c.eq_ignore_ascii_case(code))
+        })
+    }
+
+    /// Parse from an NLLB-200 / FLORES-style code (`"rus_Cyrl"`),
+    /// case-insensitively. Script-qualified: `"rus"` does not match.
+    pub fn from_nllb(code: &str) -> Option<Lang> {
+        Lang::ALL
+            .iter()
+            .copied()
+            .find(|lang| lang.nllb().is_some_and(|c| c.eq_ignore_ascii_case(code)))
+    }
+}
 
 impl FromStr for Lang {
     type Err = UnknownLang;
@@ -555,13 +542,31 @@ mod tests {
         assert_eq!(Lang::Mon.nllb(), Some("khk_Cyrl"));
         assert_eq!(Lang::Mhr.nllb(), Some("mari_Cyrl"));
         assert_eq!(Lang::Cmn.nllb(), Some("cmn_Hans"));
-        // Whisper covers the big Turkic languages — Kyrgyz excepted —
-        // and none of the smaller ones.
-        assert_eq!(Lang::Bak.whisper(), Some("bashkir"));
-        assert_eq!(Lang::Tgk.whisper(), Some("tajik"));
-        assert_eq!(Lang::Kir.whisper(), None);
-        assert_eq!(Lang::Chv.whisper(), None);
-        assert_eq!(Lang::Sah.whisper(), None);
+    }
+
+    #[test]
+    fn from_code_round_trips() {
+        // Every recorded ISO 639-1 / NLLB code parses back to its language,
+        // case-insensitively; nothing extra matches.
+        for lang in Lang::ALL {
+            if let Some(iso1) = lang.iso_639_1() {
+                assert_eq!(Lang::from_iso_639_1(iso1), Some(lang), "{}", lang.code());
+                assert_eq!(Lang::from_iso_639_1(&iso1.to_uppercase()), Some(lang));
+            }
+            if let Some(nllb) = lang.nllb() {
+                assert_eq!(Lang::from_nllb(nllb), Some(lang), "{}", lang.code());
+                assert_eq!(Lang::from_nllb(&nllb.to_uppercase()), Some(lang));
+            }
+        }
+        assert_eq!(Lang::from_iso_639_1("ru"), Some(Lang::Rus));
+        assert_eq!(Lang::from_iso_639_1("kk"), Some(Lang::Kaz));
+        assert_eq!(Lang::from_nllb("rus_Cyrl"), Some(Lang::Rus));
+        assert_eq!(Lang::from_nllb("khk_Cyrl"), Some(Lang::Mon));
+        // Wrong system or unqualified code does not match.
+        assert_eq!(Lang::from_iso_639_1("rus"), None);
+        assert_eq!(Lang::from_iso_639_1("sah"), None); // 639-3, not 639-1
+        assert_eq!(Lang::from_nllb("ru"), None);
+        assert_eq!(Lang::from_nllb("rus"), None);
     }
 
     #[test]
