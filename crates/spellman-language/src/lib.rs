@@ -174,7 +174,13 @@ crate::languages! {
         name:    "Russian",
         script:  Script::Cyrillic,
         flag:    "🇷🇺",
-        names:   { Rus: "Русский" },
+        names:   {
+            Cmn: "俄语",
+            Deu: "Russisch",
+            Hin: "रूसी",
+            Spa: "ruso",
+            Rus: "Русский",
+        },
     },
     Ukr {
         iso1:    Some("uk"),
@@ -183,7 +189,13 @@ crate::languages! {
         name:    "Ukrainian",
         script:  Script::Cyrillic,
         flag:    "🇺🇦",
-        names:   { Rus: "Украинский" },
+        names:   {
+            Cmn: "乌克兰语",
+            Deu: "Ukrainisch",
+            Hin: "यूक्रेनी",
+            Spa: "ucraniano",
+            Rus: "Украинский",
+        },
     },
     Bel {
         iso1:    Some("be"),
@@ -192,7 +204,13 @@ crate::languages! {
         name:    "Belarusian",
         script:  Script::Cyrillic,
         flag:    "🇧🇾",
-        names:   { Rus: "Белорусский" },
+        names:   {
+            Cmn: "白俄罗斯语",
+            Deu: "Belarussisch",
+            Hin: "बेलारूसी",
+            Spa: "bielorruso",
+            Rus: "Белорусский",
+        },
     },
     Bul {
         iso1:    Some("bg"),
@@ -201,7 +219,13 @@ crate::languages! {
         name:    "Bulgarian",
         script:  Script::Cyrillic,
         flag:    "🇧🇬",
-        names:   { Rus: "Болгарский" },
+        names:   {
+            Cmn: "保加利亚语",
+            Deu: "Bulgarisch",
+            Hin: "बुल्गारियाई",
+            Spa: "búlgaro",
+            Rus: "Болгарский",
+        },
     },
     Mkd {
         iso1:    Some("mk"),
@@ -210,7 +234,13 @@ crate::languages! {
         name:    "Macedonian",
         script:  Script::Cyrillic,
         flag:    "🇲🇰",
-        names:   { Rus: "Македонский" },
+        names:   {
+            Cmn: "马其顿语",
+            Deu: "Mazedonisch",
+            Hin: "मेसिडोनियन",
+            Spa: "macedonio",
+            Rus: "Македонский",
+        },
     },
     Srp {
         iso1:    Some("sr"),
@@ -219,7 +249,13 @@ crate::languages! {
         name:    "Serbian",
         script:  Script::Cyrillic,
         flag:    "🇷🇸",
-        names:   { Rus: "Сербский" },
+        names:   {
+            Cmn: "塞尔维亚语",
+            Deu: "Serbisch",
+            Hin: "सर्बियाई",
+            Spa: "serbio",
+            Rus: "Сербский",
+        },
     },
     Kaz {
         iso1:    Some("kk"),
@@ -228,7 +264,13 @@ crate::languages! {
         name:    "Kazakh",
         script:  Script::Cyrillic,
         flag:    "🇰🇿",
-        names:   { Rus: "Казахский" },
+        names:   {
+            Cmn: "哈萨克语",
+            Deu: "Kasachisch",
+            Hin: "कज़ाख़",
+            Spa: "kazajo",
+            Rus: "Казахский",
+        },
     },
     Kir {
         iso1:    Some("ky"),
@@ -237,7 +279,13 @@ crate::languages! {
         name:    "Kyrgyz",
         script:  Script::Cyrillic,
         flag:    "🇰🇬",
-        names:   { Rus: "Киргизский" },
+        names:   {
+            Cmn: "柯尔克孜语",
+            Deu: "Kirgisisch",
+            Hin: "किर्गिज़",
+            Spa: "kirguís",
+            Rus: "Киргизский",
+        },
     },
     Tgk {
         iso1:    Some("tg"),
@@ -246,7 +294,13 @@ crate::languages! {
         name:    "Tajik",
         script:  Script::Cyrillic,
         flag:    "🇹🇯",
-        names:   { Rus: "Таджикский" },
+        names:   {
+            Cmn: "塔吉克语",
+            Deu: "Tadschikisch",
+            Hin: "ताजिकी",
+            Spa: "tayiko",
+            Rus: "Таджикский",
+        },
     },
     Uzn {
         iso1:    Some("uz"),
@@ -257,7 +311,13 @@ crate::languages! {
         name:    "Uzbek",
         script:  Script::Cyrillic,
         flag:    "🇺🇿",
-        names:   { Rus: "Узбекский" },
+        names:   {
+            Cmn: "乌孜别克语",
+            Deu: "Usbekisch",
+            Hin: "उज़्बेक",
+            Spa: "uzbeko",
+            Rus: "Узбекский",
+        },
     },
     Tat {
         iso1:    Some("tt"),
@@ -267,7 +327,13 @@ crate::languages! {
         script:  Script::Cyrillic,
         // Tatarstan — republic within Russia.
         flag:    "🇷🇺",
-        names:   { Rus: "Татарский" },
+        names:   {
+            Cmn: "鞑靼语",
+            Deu: "Tatarisch",
+            Hin: "तातार",
+            Spa: "tártaro",
+            Rus: "Татарский",
+        },
     },
     Bak {
         iso1:    Some("ba"),
@@ -277,7 +343,13 @@ crate::languages! {
         script:  Script::Cyrillic,
         // Bashkortostan — republic within Russia.
         flag:    "🇷🇺",
-        names:   { Rus: "Башкирский" },
+        names:   {
+            Cmn: "巴什基尔语",
+            Deu: "Baschkirisch",
+            Hin: "बाश्किर",
+            Spa: "baskir",
+            Rus: "Башкирский",
+        },
     },
     Chv {
         iso1:    Some("cv"),
@@ -287,7 +359,13 @@ crate::languages! {
         script:  Script::Cyrillic,
         // Chuvashia — republic within Russia.
         flag:    "🇷🇺",
-        names:   { Rus: "Чувашский" },
+        names:   {
+            Cmn: "楚瓦什语",
+            Deu: "Tschuwaschisch",
+            Hin: "चुवाश",
+            Spa: "chuvasio",
+            Rus: "Чувашский",
+        },
     },
     Sah {
         iso1:    None, // no ISO 639-1 code; "sah" is the 639-3 subtag
@@ -297,7 +375,13 @@ crate::languages! {
         script:  Script::Cyrillic,
         // Sakha (Yakutia) — republic within Russia.
         flag:    "🇷🇺",
-        names:   { Rus: "Якутский" },
+        names:   {
+            Cmn: "萨哈语",
+            Deu: "Jakutisch",
+            Hin: "साख़ा",
+            Spa: "yakuto",
+            Rus: "Якутский",
+        },
     },
     Tyv {
         iso1:    None, // no ISO 639-1 code
@@ -307,7 +391,13 @@ crate::languages! {
         script:  Script::Cyrillic,
         // Tuva — republic within Russia.
         flag:    "🇷🇺",
-        names:   { Rus: "Тувинский" },
+        names:   {
+            Cmn: "图瓦语",
+            Deu: "Tuwinisch",
+            Hin: "तूवी",
+            Spa: "tuvano",
+            Rus: "Тувинский",
+        },
     },
     Mon {
         // NLLB follows GlotLID: Halh Mongolian `khk_Cyrl`.
@@ -317,7 +407,13 @@ crate::languages! {
         name:    "Mongolian",
         script:  Script::Cyrillic,
         flag:    "🇲🇳",
-        names:   { Rus: "Монгольский" },
+        names:   {
+            Cmn: "蒙古语",
+            Deu: "Mongolisch",
+            Hin: "मंगोल",
+            Spa: "mongol",
+            Rus: "Монгольский",
+        },
     },
     Oss {
         iso1:    Some("os"),
@@ -327,7 +423,13 @@ crate::languages! {
         script:  Script::Cyrillic,
         // Most speakers live in North Ossetia–Alania (Russia), not Georgia.
         flag:    "🇷🇺",
-        names:   { Rus: "Осетинский" },
+        names:   {
+            Cmn: "奥塞梯语",
+            Deu: "Ossetisch",
+            Hin: "आसी",
+            Spa: "osetio",
+            Rus: "Осетинский",
+        },
     },
     Che {
         iso1:    Some("ce"),
@@ -337,7 +439,13 @@ crate::languages! {
         script:  Script::Cyrillic,
         // Chechnya — republic within Russia.
         flag:    "🇷🇺",
-        names:   { Rus: "Чеченский" },
+        names:   {
+            Cmn: "车臣语",
+            Deu: "Tschetschenisch",
+            Hin: "चेचन",
+            Spa: "checheno",
+            Rus: "Чеченский",
+        },
     },
     Udm {
         iso1:    None, // no ISO 639-1 code
@@ -347,7 +455,13 @@ crate::languages! {
         script:  Script::Cyrillic,
         // Udmurtia — republic within Russia.
         flag:    "🇷🇺",
-        names:   { Rus: "Удмуртский" },
+        names:   {
+            Cmn: "乌德穆尔特语",
+            Deu: "Udmurtisch",
+            Hin: "उदमूर्त",
+            Spa: "udmurto",
+            Rus: "Удмуртский",
+        },
     },
     Mhr {
         iso1:    None, // no ISO 639-1 code
@@ -359,7 +473,13 @@ crate::languages! {
         script:  Script::Cyrillic,
         // Mari El — republic within Russia.
         flag:    "🇷🇺",
-        names:   { Rus: "Марийский" },
+        names:   {
+            Cmn: "马里语",
+            Deu: "Mari",
+            Hin: "मरी",
+            Spa: "mari",
+            Rus: "Марийский",
+        },
     },
     Kpv {
         iso1:    None, // Komi-Zyrian proper; "kv" is the Komi macrolanguage
@@ -369,7 +489,13 @@ crate::languages! {
         script:  Script::Cyrillic,
         // Komi Republic — republic within Russia.
         flag:    "🇷🇺",
-        names:   { Rus: "Коми" },
+        names:   {
+            Cmn: "科米语",
+            Deu: "Komi",
+            Hin: "कोमी",
+            Spa: "komi",
+            Rus: "Коми",
+        },
     },
     // Latin script group (model columns 21..26)
     Eng {
@@ -379,7 +505,13 @@ crate::languages! {
         name:    "English",
         script:  Script::Latin,
         flag:    "🇬🇧",
-        names:   { Rus: "Английский" },
+        names:   {
+            Cmn: "英语",
+            Deu: "Englisch",
+            Hin: "अंग्रेज़ी",
+            Spa: "inglés",
+            Rus: "Английский",
+        },
     },
     Spa {
         iso1:    Some("es"),
@@ -388,7 +520,13 @@ crate::languages! {
         name:    "Spanish",
         script:  Script::Latin,
         flag:    "🇪🇸",
-        names:   { Rus: "Испанский" },
+        names:   {
+            Cmn: "西班牙语",
+            Deu: "Spanisch",
+            Hin: "स्पेनी",
+            Spa: "español",
+            Rus: "Испанский",
+        },
     },
     Fra {
         iso1:    Some("fr"),
@@ -397,7 +535,13 @@ crate::languages! {
         name:    "French",
         script:  Script::Latin,
         flag:    "🇫🇷",
-        names:   { Rus: "Французский" },
+        names:   {
+            Cmn: "法语",
+            Deu: "Französisch",
+            Hin: "फ़्रान्सीसी",
+            Spa: "francés",
+            Rus: "Французский",
+        },
     },
     Por {
         iso1:    Some("pt"),
@@ -406,7 +550,13 @@ crate::languages! {
         name:    "Portuguese",
         script:  Script::Latin,
         flag:    "🇵🇹",
-        names:   { Rus: "Португальский" },
+        names:   {
+            Cmn: "葡萄牙语",
+            Deu: "Portugiesisch",
+            Hin: "पुर्तगाली",
+            Spa: "portugués",
+            Rus: "Португальский",
+        },
     },
     Deu {
         iso1:    Some("de"),
@@ -415,7 +565,13 @@ crate::languages! {
         name:    "German",
         script:  Script::Latin,
         flag:    "🇩🇪",
-        names:   { Rus: "Немецкий" },
+        names:   {
+            Cmn: "德语",
+            Deu: "Deutsch",
+            Hin: "जर्मन",
+            Spa: "alemán",
+            Rus: "Немецкий",
+        },
     },
     // Direct-script languages (model columns 26..30; resolved by the router,
     // never a trained argmax target)
@@ -428,7 +584,13 @@ crate::languages! {
         name:    "Mandarin",
         script:  Script::Han,
         flag:    "🇨🇳",
-        names:   { Rus: "Китайский" },
+        names:   {
+            Cmn: "普通话",
+            Deu: "Mandarin",
+            Hin: "मन्दारिन",
+            Spa: "chino mandarín",
+            Rus: "Китайский",
+        },
     },
     Jpn {
         iso1:    Some("ja"),
@@ -437,7 +599,13 @@ crate::languages! {
         name:    "Japanese",
         script:  Script::Kana, // kana presence is the Japanese differentiator
         flag:    "🇯🇵",
-        names:   { Rus: "Японский" },
+        names:   {
+            Cmn: "日语",
+            Deu: "Japanisch",
+            Hin: "जापानी",
+            Spa: "japonés",
+            Rus: "Японский",
+        },
     },
     Hin {
         iso1:    Some("hi"),
@@ -446,7 +614,13 @@ crate::languages! {
         name:    "Hindi",
         script:  Script::Devanagari,
         flag:    "🇮🇳",
-        names:   { Rus: "Хинди" },
+        names:   {
+            Cmn: "印地语",
+            Deu: "Hindi",
+            Hin: "हिन्दी",
+            Spa: "hindi",
+            Rus: "Хинди",
+        },
     },
     Ara {
         iso1:    Some("ar"),
@@ -457,7 +631,13 @@ crate::languages! {
         name:    "Arabic",
         script:  Script::Arabic,
         flag:    "🇦🇪",
-        names:   { Rus: "Арабский" },
+        names:   {
+            Cmn: "阿拉伯语",
+            Deu: "Arabisch",
+            Hin: "अरबी",
+            Spa: "árabe",
+            Rus: "Арабский",
+        },
     },
 }
 
@@ -592,6 +772,28 @@ mod tests {
         // any unrecorded display language falls back to the English name.
         assert_eq!(Lang::Rus.name_in(Lang::Srp), "Russian");
         assert_eq!(Lang::Rus.name_in(Lang::Rus), "Русский");
+    }
+
+    #[test]
+    fn localized_names_cover_the_top_internet_languages() {
+        // Every language carries localized names for the top-internet
+        // display set (Cmn/Deu/Hin/Spa + the established Rus); English
+        // display falls back to the English name by design.
+        for lang in Lang::ALL {
+            for display in [Lang::Cmn, Lang::Deu, Lang::Hin, Lang::Spa, Lang::Rus] {
+                assert!(
+                    !lang.name_in(display).is_empty(),
+                    "{} in {}",
+                    lang.code(),
+                    display
+                );
+            }
+            assert_eq!(lang.name_in(Lang::Eng), lang.name(), "{}", lang.code());
+        }
+        assert_eq!(Lang::Rus.name_in(Lang::Spa), "ruso");
+        assert_eq!(Lang::Eng.name_in(Lang::Cmn), "英语");
+        assert_eq!(Lang::Fra.name_in(Lang::Deu), "Französisch");
+        assert_eq!(Lang::Hin.name_in(Lang::Hin), "हिन्दी");
     }
 
     #[test]
