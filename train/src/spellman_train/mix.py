@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import subprocess
 import sys
 import zlib
 from pathlib import Path
@@ -222,30 +223,24 @@ def cap_stratified(
     return out
 
 
-def _prewarm_worker(spec: str) -> tuple[str, int]:
-    """Build one source's cache to completion (runs in a worker process).
-
-    Each spec's cache is content-addressed and independent, so cold
-    caches build concurrently without write races; the mixer then
-    replays them warm through its normal single-process path, keeping
-    dedup order and RNG streams byte-identical to a sequential build.
-    """
-
-    name, opts = parse_source(spec)
-    ds = sources.create(name, **opts)
-    n = sum(1 for _ in ds.samples_cached())
-    return spec, n
-
-
 def prebuild_colds(specs: list[str], jobs: int) -> None:
-    """Build every cold cache in `specs` with a process pool.
+    """Build every cold cache in `specs`, one throwaway subprocess each.
 
     Bounded by RAM, not cores: the big diverse pools hold ~1-3GB each
     during normalize+select, so 3-4 jobs is the practical ceiling on a
-    16GB machine regardless of core count.
+    16GB machine regardless of core count. Each build runs as
+    ``python -m spellman_train.prewarm <spec>`` — a process that ends via
+    ``os._exit`` so pyarrow's exit-time thread-pool teardown (which can
+    deadlock inside its C++ static destructors, wedging the worker and
+    this parent with it) never runs. The parent only waits on return
+    codes; the child owns its cache file exclusively.
     """
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    def run_one(spec: str) -> None:
+        proc = subprocess.run([sys.executable, "-m", "spellman_train.prewarm", spec])
+        if proc.returncode != 0:
+            raise RuntimeError(f"prewarm failed for {spec!r} (exit {proc.returncode})")
 
     cold: list[str] = []
     for spec in specs:
@@ -256,12 +251,11 @@ def prebuild_colds(specs: list[str], jobs: int) -> None:
         print("prebuild: all caches warm")
         return
     print(f"prebuild: {len(cold)}/{len(specs)} cold caches, {jobs} jobs", flush=True)
-    with ProcessPoolExecutor(max_workers=jobs) as ex:
-        futures = {ex.submit(_prewarm_worker, s): s for s in cold}
+    with ThreadPoolExecutor(max_workers=jobs) as ex:
+        futures = {ex.submit(run_one, s): s for s in cold}
         try:
             for fut in as_completed(futures):
-                spec, n = fut.result()
-                print(f"prebuilt {spec}: {n:,} samples", flush=True)
+                fut.result()
         except Exception:
             for f in futures:
                 f.cancel()
