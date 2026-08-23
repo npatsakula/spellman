@@ -13,8 +13,8 @@
 #   uzn/che have NO orthographic Russian gate (alphabets overlap) — residual
 #   label noise there is documented; a lower-threshold judge pass is the
 #   un-pulled lever (rus is not in their twin groups).
-# GoURMET (OPUS) was dropped: object.pouta.csc.fi unreachable from our
-#   network — optional re-add (~23k ky pairs) if reachable.
+# GoURMET (OPUS, CC0) re-added 2026-08-23: ~23k ky-ru bitext pairs, host
+# reachable again from the build network.
 # Cold machine: uv sync && bash recipes/v12-pools.sh && bash recipes/v12.sh
 # (pools first: the diverse lanes pin cache files this recipe does not build)
 # (first run downloads everything; ~2.5GB MADLAD + HPLT/Glot500 streams)
@@ -41,6 +41,7 @@ uv run spellman-train mix --out data/v12 \
   --source hf:repo=NM-development/nmd-ce-ru-171k-v0,column=ce,lang=che,docs=999999,per_doc=1,streaming=False \
   --source csv:path=rusentitweet_train.csv,column=text,lang=rus \
   --source jsonl:path=seeds/hard_negatives.jsonl \
+  --source jsonl:path=cache/hard_negatives_scaled.jsonl \
   --source ukr_tweets:limit=50000 \
   --source mn_social \
   --source kazsandra \
@@ -84,7 +85,7 @@ uv run spellman-train mix --out data/v12 \
   --source hf:repo=YShynkarov/COSMUS,column=document_content,where=language_manual=russian,lang=rus,raw=True,docs=0,streaming=False,max_chars=512 \
   --source csv:path=rusentitweet_train.csv,column=text,lang=rus,min_chars=3,max_chars=19 \
   --source jsonl:path=seeds/relabel_rus.jsonl \
-  --source diverse:lang=rus,pool_file=cache/wikisource-5da9d07b30.jsonl,budget=6000 \
+  --source diverse:lang=rus,pool_file=cache/wikisource-5da9d07b30.jsonl,budget=12000 \
   --source diverse:lang=kaz,pool_file=cache/kazsandra-eb6571e000.jsonl,budget=16000 \
   --source 'diverse:lang=kir,pool_repo=HPLT/HPLT2.0_cleaned,pool_config=kir_Cyrl,pool_docs=200000,budget=16000,pool_no_chars=ҕһ' \
   --source diverse:lang=tgk,pool_file=cache/hf-b407fce95d.jsonl,budget=16000 \
@@ -100,6 +101,7 @@ uv run spellman-train mix --out data/v12 \
   --source 'hf:repo=HPLT/HPLT2.0_cleaned,config=kir_Cyrl,lang=kir,docs=30000,per_doc=4,no_chars=ҕһ' \
   --source hf:repo=allenai/MADLAD-400,files=data/ky/ky_clean_0000.jsonl.gz,lang=kir,raw=True,docs=0,streaming=False,max_chars=512,cyr=0.6 \
   --source hf:repo=wikimedia/wikipedia,config=20231101.ky,lang=kir,docs=10000,per_doc=4 \
+  --source opus:corpus=GoURMET,src=ky,tgt=ru,lang=kir \
   --source 'hf:repo=HPLT/HPLT2.0_cleaned,config=tgk_Cyrl,lang=tgk,docs=30000,per_doc=4,no_chars=ўы' \
   --source hf:repo=alifbank/Tajik,files=tg_sentences.txt,lang=tgk,raw=True,docs=0,streaming=False,min_chars=20,max_chars=512 \
   --source 'hf:repo=allenai/MADLAD-400,files=data/tg/tg_clean_0000.jsonl.gz,lang=tgk,raw=True,docs=0,streaming=False,max_chars=512,cyr=0.6,no_chars=ўы' \

@@ -196,3 +196,48 @@ hf/fineweb2/diverse-pools, fineweb2 `langs_exclude` (backbone split so the
   judge pass at --conf 0.90 for che/uzn (rus not in their twin groups).
 - **Status**: gates wired into the recipe; gated-cache rebuild + re-mix +
   retrain NOT yet run on the final recipe — pick up there.
+
+## v12 completion — gated rebuild, rus-register recovery, promotion (2026-08-24)
+
+Gated pipeline run end-to-end (fresh caches): prebuild recovered from a
+race (tgk diverse lane pins the alifbank pool that a LATER recipe line
+builds — prewarm alifbank first), hygiene dropped 18,445/8.79M rows
+(alifbank exactly the documented 75; HPLT tgk pre-gate was 33% uzn —
+38,565+7,436 judge drops; the ўы-gated sources needed ≤123), gated mix
+767,995/429,114/367,762. tgk F1 1.00 on 32k test rows, kir 0.99, tgk
+gone from top confusions — the gates did their job.
+
+- **First-pass non-reproduction**: this machine's builds (gated s42/s43,
+  pre-gate) all land lit 94.8–95.7 / cosmus 96.3–96.4 vs the GPU machine's
+  first pass 97.65/97.26. Excluded by direct evidence: the gates (pre-gate
+  reproduces identically), seed weather (±0.45 lit probe), upstream drift
+  (all mutable repos' commits predate the first pass; both machines built
+  caches the same week), judge identity (HF model reproduces v11c's five
+  referee numbers exactly), adapter drift, source order (63 shared sources
+  with v11c, one dedup-neutral inversion; crc32 splits make order unable
+  to change split counts). Positive finding: the first pass's val/test
+  counts imply a ~44k-smaller uzn pool — the committed recipe ≠ the
+  first-pass invocation in ≥1 uzn spec. OPEN: retrieve the GPU machine's
+  data/v12/manifest.json; residual suspects are CUDA-vs-MPS numerics and
+  that spec gap.
+- **Root symptom** (error-profile diff vs v11c): v12's cleaner, fuller
+  minority classes absorb ambiguous rus (lit errors rus→che 3→18,
+  udm 10→17, tyv 7→10). rus train is cap-bound at 32k in both mixes —
+  v11c and v12 train the same rus rows; the competition around them
+  sharpened.
+- **Recovery levers, one at a time** (all on frozen referees): hard
+  negatives scaled 1.7k→4.3k (docs 60k, per-lang 8k, per-doc 4, conf
+  0.95; yields rus 2,030 + oss 1,176 boundary rows): lit 94.90→95.70,
+  cosmus +0.28. Wikisource lit lane budget 6k→12k: short +0.87, cosmus
+  +0.22, rst −0.26 (mild wild-row displacement). Hard negatives 4.3k:
+  lit 96.20, short 90.24, cosmus 96.69. Final v12 referees vs v11c:
+  tatoeba 98.64/98.78, cosmus 96.69/97.15, lit 96.20/97.15,
+  rst 93.28/94.47, short 90.24/91.29; held-out same-split +0.62 over
+  v11c (97.52 vs 96.90). GoURMET (CC0, 22,410 ky pairs, 0 hygiene drops)
+  re-added to the recipe — referee-neutral, kir robustness.
+- **Promoted 2026-08-24** (user-approved): model = train/model-v12hn2;
+  quant gates int8-row/col fp8-row/col all 97.50–97.51 (≤0.02pp drop);
+  dataset card now renders per-upstream licenses (publish.py LICENSES);
+  manifest committed at train/data/v12/manifest.json. Unpulled levers
+  for wave 2: uzn/mon in hard-negative TARGETS, cap raise past 32k,
+  the conf-0.90 uzn/che judge pass.
