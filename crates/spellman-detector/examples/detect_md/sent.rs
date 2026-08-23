@@ -169,7 +169,10 @@ mod tests {
             ["— Моя жена, — продолжал князь Андрей, — прекрасная женщина."]
         );
         // terminator before a dash = new dialogue turn
-        assert_eq!(parts("— Нет, — сказал он. — Да."), ["— Нет, — сказал он.", "— Да."]);
+        assert_eq!(
+            parts("— Нет, — сказал он. — Да."),
+            ["— Нет, — сказал он.", "— Да."]
+        );
         // question + closing quote + dash attribution: two pieces
         assert_eq!(
             parts("«Эй, кто там?» — крикнул вахтёр"),
@@ -188,7 +191,10 @@ mod tests {
 
     #[test]
     fn decimals_and_hosts_stay_whole() {
-        assert_eq!(parts("Цена 3.5 рубля. Дорого!"), ["Цена 3.5 рубля.", "Дорого!"]);
+        assert_eq!(
+            parts("Цена 3.5 рубля. Дорого!"),
+            ["Цена 3.5 рубля.", "Дорого!"]
+        );
         assert_eq!(
             parts("Сайт example.com/abc открыт. Позже."),
             ["Сайт example.com/abc открыт.", "Позже."]
@@ -205,7 +211,10 @@ mod tests {
 
     #[test]
     fn no_terminator_is_one_piece() {
-        assert_eq!(parts("Просто строка без конца"), ["Просто строка без конца"]);
+        assert_eq!(
+            parts("Просто строка без конца"),
+            ["Просто строка без конца"]
+        );
         assert!(split_line("   ").is_empty());
         assert!(split_line("").is_empty());
     }
@@ -217,7 +226,10 @@ mod tests {
         assert_eq!(glue_short(pieces, 20), ["«Да!» — сказал он."]);
         // question + closer + attribution works the same
         let pieces = parts("«Эй, кто там?» — крикнул вахтёр");
-        assert_eq!(glue_short(pieces, 20), ["«Эй, кто там?» — крикнул вахтёр"]);
+        assert_eq!(
+            glue_short(pieces, 20),
+            ["«Эй, кто там?» — крикнул вахтёр"]
+        );
     }
 
     #[test]
