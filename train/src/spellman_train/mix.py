@@ -445,9 +445,13 @@ def run(args: argparse.Namespace) -> None:
             # One shard per split today (~10^6 rows); the -00000-of-00001
             # suffix keeps the HF data_files glob stable if a split ever
             # outgrows a single file and gets re-sharded.
+            # Level 19 = zstd max without long-range matching: measured on
+            # the v11c mix, -17% vs the level-3 default (52.7 -> 43.7 MB on
+            # train) at identical read speed (zstd decode is level-blind);
+            # level 22 gains nothing further on this data.
             path = args.out / "data" / f"{split}-00000-of-00001.parquet"
             path.parent.mkdir(parents=True, exist_ok=True)
-            frame.write_parquet(path, compression="zstd")
+            frame.write_parquet(path, compression="zstd", compression_level=19)
         else:
             path = args.out / f"{split}.jsonl"
             frame.write_ndjson(path)
