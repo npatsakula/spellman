@@ -152,3 +152,47 @@ eval-corpus titles banned from the pool) + a literary diverse lane
   damage — small-class F1s held, close-pair referees improved, because
   the diverse budgets scaled with the cap; the risk lives in register
   *composition* (short-floor), not class share.
+
+## v12 — the commercial-clean rebuild (2026-08-23, IN FLIGHT)
+
+License audit (agent-verified) found NC data in v11c: Leipzig community
+crawls ×5 (CC-BY-NC-SA), the-cramer kir news (CC-BY-NC-4.0), muhtasham
+tajik-corpus (Leipzig-derived), and NC slices inside every used Glot500
+config (Leipzig_* 12–59% by config, nllb_other_til/TIL 2–19%). Replacements
+(all commercial+redistribution-clean): HPLT2.0 kir 676k/tgk 1.26M docs
+(CC0), alifbank Tajik sentences 1.55M (MIT — cleanest corpus ever ingested:
+75 hygiene drops), MADLAD ce/ky/tg (ODC-By), wiki ce/ky/tg (CC-BY-SA),
+tahrirchi uz-books-v2 cyr 21GB (MIT), Glot500 uzb_Cyrl Earthlings tweets
+(GPL-3, allowlisted). averoo/kyrgyz_mono proven a HPLT+kywiki re-pack (skip
+the unstated-license re-pack, use upstreams). NLLB bitext license disputed →
+excluded; Tanzil non-commercial → excluded; GoURMET (CC0) dropped — host
+unreachable from our network, optional re-add.
+
+Adapter support: hf `exclude=col=v1|v2` (prefix `*`), `no_chars` on
+hf/fineweb2/diverse-pools, fineweb2 `langs_exclude` (backbone split so the
+ў gate can't hit Belarusian), hf `txt`→text builder.
+
+- **v12 first pass** (recipe: `train/recipes/v12.sh`): splits
+  767814/423160/363405, tgk/kir/che/uzn all at the 32k cap. Referees vs
+  v11c: tatoeba 98.76/98.78, cosmus 97.26/97.15, lit 97.65/97.15 (+0.50),
+  rst 94.13/94.47, short 90.24/91.29. **Same-split held-out: v12 97.73 vs
+  v11c 97.37 (+0.36)** — v11c's 98.56 was on its own easier (Leipzig-clean)
+  split. Seed-43 probe (same data): held-out 97.75, rst 93.90, short 90.77
+  → measured seed spread rst ±0.23 / short ±0.53; the v12 deltas on frozen
+  referees sit within ~1–1.5× spread (short delta = 3 rows of 574).
+- **Label-noise diagnosis** (error audit): the new crawls carry mislabeled
+  rows the model correctly rejects — Russian inside uzn (uz-books
+  translations, CGLU tweets) and che (MADLAD ce crawl: Moscow portals,
+  legal sites); genuine Sakha/Tuvan text inside HPLT kir (kir→sah/tyv
+  errors are the model being RIGHT). ~770 such rows in the v12 test split
+  alone explain most of the 97.73-vs-98.56 held-out gap. Hygiene missed
+  them structurally: conf 0.90–0.99 < 0.995 bar; kir↔sah/tyv twin-
+  protected by design; <8-token rows.
+- **Orthographic gates (empirical, trusted-corpus-validated)**: tgk
+  no_chars=ўы (ы: 0.08% trusted vs 3.7% MADLAD-tg; Tajik alphabet has no ы);
+  kir HPLT + pool no_chars=ҕһ (Sakha-only; 0.00% trusted, 1.2% HPLT).
+  uzn/che NOT orthographically separable from Russian (shared alphabets —
+  ы even appears in 1.4% of genuine uz-crawl rows); lever left unpulled:
+  judge pass at --conf 0.90 for che/uzn (rus not in their twin groups).
+- **Status**: gates wired into the recipe; gated-cache rebuild + re-mix +
+  retrain NOT yet run on the final recipe — pick up there.

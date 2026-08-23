@@ -81,7 +81,14 @@ class FineWeb2(Dataset):
     docs_per_lang: int = 600
     per_doc: int = 4
     seed: int = 42
-    langs: list[str] | None = field(default=None)
+    langs: list[str] | str | None = field(default=None)
+    #: Languages to skip even when ``langs`` is unset — used to split one
+    #: language out of the backbone for a per-language gate (tgk's ў filter).
+    langs_exclude: str = ""
+    #: Drop docs containing any of these characters — the script-level
+    #: pollution gate. ``no_chars=ў`` de-Uzbekifies the tgk config (ў never
+    #: occurs in Tajik; measured 63% Uzbek docs in CommonCrawl-derived tg).
+    no_chars: str = ""
 
     name = "fineweb2"
 
@@ -89,7 +96,16 @@ class FineWeb2(Dataset):
         from tqdm import tqdm
 
         rng = random.Random(self.seed)
-        targets = self.langs or list(FW2_SOURCES)
+        if self.langs is None:
+            targets = list(FW2_SOURCES)
+        elif isinstance(self.langs, str):
+            targets = [l for l in self.langs.split("+") if l]
+        else:
+            targets = list(self.langs)
+        if self.langs_exclude:
+            skip = {l for l in self.langs_exclude.split("+") if l}
+            targets = [l for l in targets if l not in skip]
+        no_chars = self.no_chars or ""
         for code in targets:
             config, repo = FW2_SOURCES[code]
             try:
@@ -101,6 +117,8 @@ class FineWeb2(Dataset):
                 continue
             n = 0
             for doc in tqdm(ds.take(self.docs_per_lang), total=self.docs_per_lang, desc=code, leave=False):
+                if no_chars and any(ch in doc["text"] for ch in no_chars):
+                    continue
                 for window in windows_from_doc(doc["text"], rng, self.per_doc):
                     yield code, window
                     n += 1

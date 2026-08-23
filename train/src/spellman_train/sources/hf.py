@@ -20,11 +20,16 @@ unlocks the row gates:
     --source hf:repo=NLP-UniBW/tweets_about_german_politicians_jan_feb_2025,where=language=de,lang=deu,raw=True
     # labeled ua/ru/surzhyk corpus: slice the gold-Ukrainian rows
     --source hf:repo=YShynkarov/COSMUS,column=document_content,where=language_manual=ukrainian,lang=ukr,raw=True
+    # Glot500 keeps per-row source licenses in its `dataset` field — exclude
+    # the NC/restricted slices (Leipzig CC-BY-NC-SA, TIL, mixed mtdata, Bible):
+    --source 'hf:repo=cis-lmu/Glot500,config=tat_Cyrl,lang=tat,exclude=dataset=Leipzig*|nllb_other_til|mtdata|Bible*'
+    # Uzbek-pollution gate for CommonCrawl Tajik (ў never occurs in Tajik):
+    --source hf:repo=HPLT/HPLT2.0_cleaned,config=tgk_Cyrl,lang=tgk,no_chars=ў
 
 ``docs`` caps the number of rows *scanned* (0 = everything); gates filter
 within that budget. ``files`` takes a repo-relative glob (e.g.
 ``data/telegram_blogs*``) passed as ``data_files`` — it selects a subset of
-a repo without a named config, and jsonl.gz/parquet/CSV layouts all work.
+a repo without a named config, and jsonl.gz/parquet/CSV/TXT layouts all work.
 """
 
 from __future__ import annotations
@@ -62,6 +67,16 @@ class HfCorpus(Dataset):
     #: Row equality filter ``column=value`` (Twitter-style self-labels, gold
     #: language slices). Compared as strings.
     where: str | None = None
+    #: Row exclusion filter ``column=v1|v2|...`` — drop rows whose column
+    #: matches any entry; an entry ending in ``*`` is a prefix match. Used to
+    #: strip NC-licensed slices out of multi-source corpora whose rows carry
+    #: their upstream source in a column (Glot500's `dataset`). Entries are
+    #: ``|``-separated because the spec grammar already splits on commas.
+    exclude: str | None = None
+    #: Drop rows containing any of these characters. Script-level pollution
+    #: gate: ``no_chars=ў`` on Tajik sources removes Uzbek-polluted
+    #: CommonCrawl docs (ў never occurs in Tajik; measured 63% of mC4-tg).
+    no_chars: str = ""
     #: Hub-side file glob (e.g. ``data/telegram_blogs*``) selecting a subset
     #: of a repo without a named config. Routed through hf://datasets/.
     files: str | None = None
@@ -90,7 +105,14 @@ class HfCorpus(Dataset):
             # the cardiffnlp tweet corpora).
             prefix = self.files.split("*")[0]
             ext = prefix.rsplit(".", 1)[-1].lower() if "." in prefix else ""
-            builder = {"jsonl": "json", "json": "json", "gz": "json", "parquet": "parquet", "csv": "csv"}.get(ext)
+            builder = {
+                "jsonl": "json",
+                "json": "json",
+                "gz": "json",
+                "parquet": "parquet",
+                "csv": "csv",
+                "txt": "text",
+            }.get(ext)
             if builder:
                 repo = builder
                 config = None
@@ -104,6 +126,22 @@ class HfCorpus(Dataset):
             where_col, _, where_val = self.where.partition("=")
             if not where_col or not where_val:
                 raise SystemExit(f"bad where {self.where!r} (expected column=value)")
+        exclude_col, exclude_vals = None, []
+        if self.exclude:
+            exclude_col, _, vals = self.exclude.partition("=")
+            exclude_vals = [v for v in vals.split("|") if v]
+            if not exclude_col or not exclude_vals:
+                raise SystemExit(
+                    f"bad exclude {self.exclude!r} (expected column=v1|v2 with optional * suffixes)"
+                )
+
+        def excluded(row: dict) -> bool:
+            if exclude_col is None:
+                return False
+            value = str(row.get(exclude_col))
+            return any(v.endswith("*") and value.startswith(v[:-1]) or value == v for v in exclude_vals)
+
+        no_chars = self.no_chars or ""
 
         desc = f"{self.repo}:{self.config or self.files or ''}->{self.lang}"
         rng = random.Random(self.seed)
@@ -116,8 +154,12 @@ class HfCorpus(Dataset):
         for doc in tqdm(it, total=self.docs or None, desc=desc, leave=False):
             if self.where is not None and str(doc.get(where_col)) != where_val:
                 continue
+            if excluded(doc):
+                continue
             text = doc.get(self.column)
             if not isinstance(text, str):
+                continue
+            if no_chars and any(ch in text for ch in no_chars):
                 continue
             if self.raw:
                 text = " ".join(text.split())

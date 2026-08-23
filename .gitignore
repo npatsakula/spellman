@@ -24,3 +24,6 @@ __pycache__/
 # by spellman-train train — never tracked
 /model/
 /model-*/
+
+# local training outputs (models, eval TSVs) — artifacts, not source
+train/model*/

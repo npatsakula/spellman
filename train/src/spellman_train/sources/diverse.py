@@ -92,6 +92,11 @@ class Diverse(Dataset):
     pool_repo: str | None = None
     pool_config: str | None = None
     pool_docs: int = 300_000
+    #: Orthographic gate for materialized pools: drop pool documents
+    #: containing any of these characters (a concatenated string, e.g.
+    #: ``ҕһ`` — the Sakha-only letters polluting HPLT's Kyrgyz crawl).
+    #: Part of the pool fingerprint: changing it re-materializes.
+    pool_no_chars: str = ""
     #: pool B: any built cache file ({"lang","text"} rows) — rows are used
     #: as-is (they are already unit-sized); overrides pool_repo
     pool_file: Path | None = None
@@ -148,6 +153,7 @@ class Diverse(Dataset):
             "min_chars": self.min_chars,
             "max_chars": self.max_chars,
             "max_candidates": self.max_candidates,
+            "no_chars": self.pool_no_chars,
             "v": 2,
         }
         slug = hashlib.sha1(json.dumps(fp, sort_keys=True).encode()).hexdigest()[:10]
@@ -156,6 +162,7 @@ class Diverse(Dataset):
             from datasets import load_dataset
             from tqdm import tqdm
 
+            no_chars = self.pool_no_chars or ""
             ds = load_dataset(
                 self.pool_repo, self.pool_config, streaming=True, split="train"
             ).take(self.pool_docs)
@@ -163,6 +170,8 @@ class Diverse(Dataset):
             n = 0
             with tmp.open("w", encoding="utf-8") as out:
                 for doc in tqdm(ds, total=self.pool_docs, desc=f"pool[{self.lang}]", leave=False):
+                    if no_chars and any(ch in (doc.get("text") or "") for ch in no_chars):
+                        continue
                     for s in _sentences(doc.get("text") or "", self.min_chars, self.max_chars):
                         out.write(json.dumps({"text": s}, ensure_ascii=False) + "\n")
                         n += 1
