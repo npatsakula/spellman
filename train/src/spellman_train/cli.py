@@ -80,6 +80,10 @@ def main(argv: list[str] | None = None) -> None:
         module.populate(p)
         p.set_defaults(func=module.run)
     args = ap.parse_args(argv)
+    # Modules that record their invocation (mix -> manifest.json) must see
+    # argv WITHOUT the subcommand token, or a later --from-manifest replay
+    # feeds `mix` back to argparse as a positional ("unrecognized arguments").
+    args._argv = argv[1:]
     args.func(args)
 
 

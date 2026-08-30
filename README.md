@@ -21,22 +21,27 @@ from the same eval data):
 
 | eval | rung | spellman | GlotLID v3 | fastText lid.176 |
 |---|---|---|---|---|
-| held-out mix (368,507, pristine test) | text | **97.52%** | 90.47%‡ | 81.46%* |
-| Tatoeba (37,051, out-of-domain) | word / pair / triple | **69.25 / 87.47 / 93.84** | 43.9 / 79.3 / 91.9‡ | 59.0 / 79.0 / 87.9 |
-| Tatoeba (37,051, out-of-domain) | text | 98.64% | **99.25%**‡ | 94.90%* |
-| rusentitweet (2,606 wild Russian tweets, label-audited) | text | **93.28%**† | 82.73%‡ | 90.41% |
-| COSMUS Russian (2,808 wild Telegram/reviews, gold-labeled) | text | **96.69%** | 95.69%‡ | 96.65% |
-| short utterances (574, orthography-certified ≤19 chars) | text | **90.24%**† | 71.25%‡ | 84.32% |
-| literary Russian (2,000 classic-prose sentences, held-out novel) | text | 96.20% | — | — |
+| held-out mix (719,255, pristine test) | text | **98.55%** | 92.57%‡ | 81.54%* |
+| Tatoeba (37,051, out-of-domain) | word / pair / triple | **71.88 / 89.46 / 95.24** | 43.9 / 79.3 / 91.9‡ | 59.0 / 79.0 / 87.9 |
+| Tatoeba (37,051, out-of-domain) | text | 98.98% | **99.25%**‡ | 94.90%* |
+| rusentitweet (2,606 wild Russian tweets, label-audited) | text | **96.70%**† | 82.73%‡ | 90.41% |
+| COSMUS Russian (2,808 wild Telegram/reviews, gold-labeled) | text | **97.36%** | 95.69%‡ | 96.65% |
+| short utterances (574, orthography-certified ≤19 chars) | text | **94.25%**† | 71.25%‡ | 84.32% |
+| literary Russian (2,000 classic-prose sentences, held-out novel) | text | 98.65% | — | — |
 
-The current model (v12) is the commercial-clean rebuild: every NC-licensed
-or NC-derived upstream was replaced or row-filtered (see the dataset card's
-license table), with orthographic pollution gates on the replacement crawls
-and scaled FineWeb-2 hard negatives. v11c (its NC-carrying predecessor)
-scored 98.56 / 98.78 / 94.47 / 97.15 / 91.29 / 97.15 on the same frozen
-referees — the license cleanup costs ~1pp on the wild-Russian referees and
-buys tgk/kir at F1 0.99–1.00 (v11c's tgk recall was 0.92 from data thinness;
-v12's Tajik is perfect on 32k held-out rows).
+The current model (v13c, 2026-08-30) adds the six crawl datasets
+`vpermilp/lid-{sah,tyv,kpv,mhr,oss,udm}` (~907k rows of news/library +
+Telegram/VK text, MIT) to the v12 recipe and raises the per-language cap
+from 32k to 120k rows. The data fills every thin Cyrillic class to the cap;
+the cap is what moved the referees — v12 scored 98.64 / 93.28 / 96.69 /
+90.24 / 96.20 on the same frozen files (Tatoeba / rusentitweet / COSMUS /
+short / literary), so v13c gains +3.4pp on wild Russian tweets and +4.0pp on
+short utterances with no language losing F1. v12 was the commercial-clean
+rebuild (every NC-licensed upstream replaced or row-filtered, orthographic
+pollution gates on the replacement crawls); v13c keeps that license posture
+— the added datasets are MIT compilations of public sources. The
+experiment series (cap ladder, the FineWeb-2 top-up that *hurt*) is in
+`docs/experiments.md`.
 
 § measured on the v11c-era split (same recipe shape, NC predecessors);
 every spellman cell and the held-out baseline cells above are same-split.
@@ -88,6 +93,8 @@ language inventory as the detector: lingua is built from exactly the 17
 of our languages it supports, with preloaded models — its best shot on
 our workload. Rerun:
 `cd benchmarks && cargo run --release -- --model ../model --rows-per-lang 0 ../model/eval_test.tsv --by-length --per-lang`.
+(The spellman rows in the two lid-bench tables below are v12 on its
+368,507-row split; rerun the command to refresh them for v13c.)
 
 | detector | our classes | held-out: all rows | held-out: its subset | Tatoeba: all rows | Tatoeba: its subset | µs/sample |
 |---|---|---|---|---|---|---|
@@ -149,10 +156,10 @@ What the numbers say:
   model) at ~3.5× spellman bulk; lingua high-accuracy is ~64× slower
   than spellman bulk (325 vs 5.1 µs/sample, BEAM=16).
 
-Per-language on the held-out mix: tgk F1 1.00 on 32k rows (the v12
-gates' headline — v11c's Tajik recall was 0.92), chv/deu 1.00,
-kir/uzn/mon/bak/mhr/tat 0.99 — the residual confusions are the genuinely
-hard ones (rus F1 0.84 on the short-wild-heavy slice, fra 0.92, ukr 0.94;
+Per-language on the held-out mix (v13c, 719k rows): tgk/mhr/oss/deu/chv
+F1 1.00, sah/uzn/kir/udm/bak/kaz/mon/tyv/tat/kpv/srp/bel/mkd 0.98–1.00 —
+the residual confusions are the genuinely hard ones (rus F1 0.85 on the
+short-wild-heavy slice, fra 0.94, spa/ukr 0.95, bul/eng 0.97;
 rus-attraction on short low-resource texts).
 
 Performance (fp16 svod JIT plans, BEAM=16, k=1024, Tatoeba eval —
@@ -180,14 +187,15 @@ chi²/dof ≈ 1.006 (uniform ≈ 1.0).
 | Chechen stack | Leipzig community 2017+2023, OPUS translatewiki, NM 171k ce-ru parallel | che: weakest class → F1 1.00 |
 | rusentitweet (train split) | rus | wild-register training rows; eval split is the frozen wild referee |
 | FineWeb-2 `_removed` subsets | 12 configs | model-labeled hard negatives (twin-protected) |
+| `vpermilp/lid-*` crawl datasets (v13) | sah tyv kpv mhr oss udm | news/library sites + Telegram/VK posts and comments, MIT; fills the thin Cyrillic classes to the cap |
 
 All sources flow through the pluggable adapter registry
 (`spellman_train/sources/`), are hygiene-audited (twin-protected judges, ~1.3k
 foreign rows removed), and mixed with deterministic crc32 splits —
 details in the [training guide](docs/training.md). The exact promoted mix
-(v11c) is published as parquet at
+(v13c) is published as parquet at
 [vpermilp/spellman](https://huggingface.co/datasets/vpermilp/spellman)
-(1,535,170 rows; same repo name as the model, dataset repo type), with the
+(4,214,787 rows; same repo name as the model, dataset repo type), with the
 byte-exact recipe in its `manifest.json`.
 
 ## Quick start

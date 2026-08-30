@@ -190,8 +190,12 @@ stays valid):
   training needs.
 
 ```bash
-uv run spellman-train clean cache/<name>-*.jsonl [--conf 0.995] [--script] [--dry-run]
+uv run spellman-train clean cache/<name>-*.jsonl [--conf 0.995] [--script] [--dry-run] [--jobs 8]
 ```
+
+`--jobs N` judges N caches at once (one subprocess per cache; the
+per-cache work is single-threaded numpy, so a 32-core box finishes the
+~100-cache pass in minutes instead of half an hour).
 
 Rerun after any cache rebuild — a rebuild re-downloads the dirty
 upstream data. The short-text lane (3–19 char rows, under the token
@@ -278,7 +282,7 @@ the dataset are different repo types, so the name hosts both without
 collision:
 
 ```bash
-uv run spellman-train publish dataset --dir data/v11c   # parquet + manifest + rendered card
+uv run spellman-train publish dataset --dir data/v13c   # parquet + manifest + rendered card
 uv run spellman-train publish model    --dir ../model   # model.json + model.safetensors (+ README.md)
 ```
 
@@ -290,8 +294,12 @@ publish with a fresh `hf download vpermilp/spellman --repo-type dataset`.
 
 ## Current model: recipe and results
 
-Mixed-domain mix (v11c), 32k-per-language cap, diverse budgets ×1.5
-(rus/ukr 20k, Turkic 16k), a 6k wikisource literary lane for rus, and
+v13c = the v12 recipe (`recipes/v12.sh`, its promoted manifest at
+`train/data/v12/manifest.json`) + the six crawl datasets
+`vpermilp/lid-{sah,tyv,kpv,mhr,oss,udm}` as 11 raw `hf:` lanes
+(`recipes/v13.sh`), **120k-per-language cap** (mix `--cap-per-lang
+120000`, train `--per-lang-cap 120000`), diverse budgets ×1.5
+(rus/ukr 20k, Turkic 16k), a 12k wikisource literary lane for rus, and
 `--short-floor 0.40`: FineWeb-2 line-windows + ~104k Tatoeba training
 sentences + per-language top-ups (Tatar Glot500/Wikipedia/parallel +
 `tat_Latn`, Bashkir Telegram parallel, Chuvash community mono, Tuvan
@@ -300,9 +308,13 @@ Meadow Mari literary parallel, Macedonian real tweets, Glot500
 Tajik/Sakha, native Tajik/Sakha corpora, Chechen Leipzig 2017+2023 +
 OPUS translatewiki + NM 171k ce-ru), the wild-UGC and short-utterance
 lanes of `docs/wild-ugc-candidates.md`, 12 `diverse:` lanes
-(algo=6 banded lemma coverage), and 1,706 FW2 `_removed` hard
+(algo=6 banded lemma coverage), and ~4.8k scaled FW2 `_removed` hard
 negatives. All caches passed hygiene (twin-protected). dim 128,
 6 epochs, D = 2^17, fmix32, wild/short augmentation on train/val.
+Splits 2,519,584 / 975,948 / 719,255. The cap is the lever that moved
+the referees (32k → 80k → 120k, monotone on every referee, no language
+down); FineWeb-2 top-ups of the thin tail hurt (register dilution) —
+see `docs/experiments.md`, v13.
 
 Results and history are tabulated in the [README](../README.md). Known
 residuals: rus-attraction on short low-resource texts (wants hard
@@ -313,15 +325,17 @@ texts, Latin-script Tatar short sentences, tgk data thinness.
 
 Every `mix` run records its exact recipe into
 `<out>/manifest.json` — the current model's recipe is
-`train/data_mix5/manifest.json`. Replay it (warm caches) into a fresh
-parquet mix with:
+`train/data/v13c/manifest.json` (also in the published dataset). Replay
+it (warm caches) into a fresh parquet mix with:
 
 ```bash
-uv run spellman-train mix --from-manifest data_mix5/manifest.json --out data/v11c
+uv run spellman-train mix --from-manifest data/v13c/manifest.json --out data/v13c
 ```
 
 On a fresh machine the caches rebuild by re-downloading everything
-(`fetch --manifest data_mix5/manifest.json --jobs 4` does it up front
+(`bash recipes/v12-pools.sh` first — the diverse lanes pin pool caches —
+then `fetch --manifest data/v13c/manifest.json --jobs 4` does the rest up
+front
 in parallel), so the full loop is: fetch a judge model
 (`hf download vpermilp/spellman --local-dir ../model`), build the
 caches, run the mix once, then `clean cache/*.jsonl --script`, then
@@ -376,7 +390,7 @@ uv run spellman-train mix --out data_mix \
 cd train && uv sync
 
 # 0. (fresh machine) prebuild caches in parallel + fetch a judge model
-uv run spellman-train fetch --manifest data_mix5/manifest.json --jobs 4
+uv run spellman-train fetch --manifest data/v13c/manifest.json --jobs 4
 hf download vpermilp/spellman --local-dir ../model
 
 # 1. mix (replays warm caches; parquet + manifest.json; --from-manifest

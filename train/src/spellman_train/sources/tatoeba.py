@@ -70,7 +70,28 @@ class Tatoeba(Dataset):
 
     name = "tatoeba"
 
+    #: Hub re-wrap of the export (the same sentences.csv as zstd parquet,
+    #: CC BY 2.0 FR) — materialized into `sentences` when the local dump is
+    #: absent, because downloads.tatoeba.org throttles to ~1 KB/s per
+    #: connection. A class attribute, not a field: the cache fingerprint
+    #: (and so every warm tatoeba cache) is unchanged.
+    HUB_REPO = "vpermilp/tatoeba-sentences"
+
+    def _ensure_dump(self) -> None:
+        if self.sentences.exists():
+            return
+        import polars as pl
+        from huggingface_hub import hf_hub_download
+
+        print(f"  tatoeba: {self.sentences} missing -> materializing from {self.HUB_REPO}", flush=True)
+        parquet = hf_hub_download(self.HUB_REPO, "data/train-00000-of-00001.parquet", repo_type="dataset")
+        self.sentences.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.sentences.with_suffix(".csv.part")
+        pl.read_parquet(parquet).write_csv(tmp, separator="\t", include_header=False, quote_style="never")
+        tmp.rename(self.sentences)
+
     def _eligible_by_lang(self) -> dict[str, list[str]]:
+        self._ensure_dump()
         csv.field_size_limit(sys.maxsize)
         want: dict[str, set[str]] = {
             our: {tb, *ALIASES.get(our, [])} for our, tb in TATOEBA_CODES.items()

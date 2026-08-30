@@ -244,3 +244,68 @@ gone from top confusions — the gates did their job.
   90.47 vs spellman 97.52 — spellman leads every length bucket. Unpulled
   levers for wave 2: uzn/mon in hard-negative TARGETS, cap raise past
   32k, the conf-0.90 uzn/che judge pass.
+
+## v13 — the six crawl datasets + the cap raise (2026-08-30)
+
+Data: `vpermilp/lid-{sah,tyv,kpv,mhr,oss,udm}` (crawl/dataset.py: FireCrawl
+news/library + Telegram + VK, ~907k rows, MIT) appended to the promoted v12
+manifest as 11 `hf:` raw lanes (`recipes/v13.sh`). Built cold on the
+RTX 3060 box: Tatoeba from the 2026-08 export re-wrapped as
+`vpermilp/tatoeba-sentences` (downloads.tatoeba.org throttles to ~640 B/s),
+OPUS translatewiki/GoURMET from the moses zips re-wrapped as
+`vpermilp/opus-*` (nlpl.eu/pouta unreachable from this network), the scaled
+hard negatives regenerated with the promoted judge (4,846 rows; the original
+4.3k file was never committed). Hygiene 16,848/9.73M drops. All numbers
+single-seed (42); seed spread from v12: rst ±0.23, short ±0.53.
+
+| model | cap | held-out (v13a split) | tatoeba | rst v2 | cosmus | lit | short |
+|---|---|---|---|---|---|---|---|
+| v12 (promoted) | 32k | 97.89 | 98.64 | 93.28 | 96.69 | 96.20 | 90.24 |
+| v12-local (control, this box's inputs) | 32k | 97.91 | 98.60 | 92.79 | 96.47 | 96.45 | 86.59 |
+| v13a | 32k | 97.94 | 98.67 | 93.75 | 96.58 | 97.55 | 85.71 |
+| v13b | 80k | 98.24 | 98.98 | 96.05 | 97.29 | 98.60 | 93.21 |
+| **v13c** | **120k** | **98.34** | 98.98 | **96.70** | **97.36** | **98.65** | **94.25** |
+| v13d = v13c + FW2 30k-doc top-up (thin 7 + rus) | 120k | 98.27 | **99.07** | 96.20 | 96.72 | 98.10 | 92.86 |
+| v13e = v13c + FW2 top-up (thin 7 only) | 120k | 98.30 | **99.07** | 96.24 | 97.22 | 98.35 | 93.38 |
+
+- **The six languages were never the bottleneck on the referees**: v12
+  already scores F1 0.99–1.00 on the new sah/kpv/mhr/oss/udm test rows
+  (tyv 0.98→0.99). The crawl text is long and orthographically loud. The
+  data still matters — it fills all six to the cap (23/26 languages now
+  cap-bound at 32k) — but the visible gains came from the cap.
+- **v13a's short collapse is input drift, not the data**: the v12-local
+  control (same recipe, this box's regenerated hard negatives + 2026
+  Tatoeba dump) already sits at 86.59 with ukr→rus 43 errors. Against
+  that like-for-like baseline v13a is +0.96 rst / +1.10 lit, neutral
+  elsewhere.
+- **The cap is the lever.** 32k→80k→120k moved every referee monotonically
+  and no language lost F1 (rus 0.84→0.86, ukr 0.94→0.96, fra 0.92→0.96,
+  srp 0.97→0.98 at 120k). Mechanism for the short referee: the mix holds
+  200k/100k real ≤19-char ukr/rus rows and `--short-floor 0.40` admits only
+  0.4×cap of them — 12.8k at 32k, 48k at 120k. Uncapped train pools: tgk
+  1.42M, eng 883k, chv 845k, deu 777k, uzn 641k, kir 579k … rus 121k, oss
+  122k … fra 58k, bak 44k, mkd 35k, bul 32k, mon 24k, bel 23k, srp 22k.
+  Past 120k the cap stops adding rus (pool exhausted) while the big
+  classes keep growing — the imbalance turns around.
+- **FineWeb-2 top-ups hurt.** The thin tail is thin only because the
+  backbone takes 3,600 docs/config; 30k docs (~116k rows/lang) is a
+  minutes-long stream. But web register at 5× backbone volume dilutes the
+  wild/literary rows inside the cap: with rus included every wild-rus
+  referee dropped (v13d); tail-only (v13e) still lost lit −0.30 / short
+  −0.87 and even the tail's own F1 (srp/bel/bul/mkd/fra −0.01…−0.02 on
+  the non-web test split). Register composition, not class share — v12's
+  lesson again. Lever left unpulled: register-matched tail sources
+  (Serbian/Belarusian/Macedonian UGC, Mongolian social) instead of FW2.
+- θ: 0.69 (v12) → 0.76 (v13b) → 0.78 (v13c); the confidence scale
+  tightens with the bigger sample.
+- **Promoted 2026-08-30 (user-approved): v13c.** On its own 719k-row
+  test split 98.55 (v12: 98.10), ≤20 chars 93.38 vs 90.52; F1 up or equal
+  for all 26 languages (fra 0.86→0.94, bul 0.94→0.97, mkd 0.96→0.98,
+  rus 0.83→0.85). Quant gates int8-row/col, fp8-row/col all 98.34–98.35
+  vs f16 98.34 on the v13a split. Dataset published as vpermilp/spellman
+  (4,214,787 rows); previous promoted artifact kept at train/model-v12-promoted.
+- Pipeline fixes made on the way: manifest argv recorded without the `mix`
+  token (replay of data/v12/manifest.json failed with "unrecognized
+  arguments: mix"), `clean --jobs N`, tatoeba/opus Hub fallbacks,
+  lid-* licenses in publish.py, lid-udm card (empty `moderated` config
+  broke `load_dataset` for every config).

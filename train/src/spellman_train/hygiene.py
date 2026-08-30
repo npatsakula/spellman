@@ -116,9 +116,45 @@ def populate(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--only-lang", default=None, help="clean only rows with this gold label")
     ap.add_argument("--script", action="store_true", help="also apply the cross-script rule (see module docstring)")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="judge N caches in parallel, one subprocess each (caches are "
+                         "independent files; the per-cache work is single-threaded numpy)")
+
+
+def _run_parallel(args: argparse.Namespace) -> None:
+    """One `python -m spellman_train.hygiene <cache>` per cache, N at a time.
+
+    Same shape as mix.prebuild_colds: the parent only waits on return codes,
+    each child owns its cache file (rewritten via tmp+replace, so a killed
+    child leaves the original intact)."""
+    import subprocess
+    import sys
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    base = [sys.executable, "-m", "spellman_train.hygiene", "--model", str(args.model), "--conf", str(args.conf)]
+    if args.script:
+        base.append("--script")
+    if args.only_lang:
+        base += ["--only-lang", args.only_lang]
+    if args.dry_run:
+        base.append("--dry-run")
+
+    def one(cache: Path) -> None:
+        proc = subprocess.run(base + [str(cache)])
+        if proc.returncode != 0:
+            raise RuntimeError(f"hygiene failed for {cache} (exit {proc.returncode})")
+
+    print(f"hygiene: {len(args.caches)} caches, {args.jobs} jobs", flush=True)
+    with ThreadPoolExecutor(max_workers=args.jobs) as ex:
+        futures = [ex.submit(one, c) for c in args.caches]
+        for fut in as_completed(futures):
+            fut.result()
 
 
 def run(args: argparse.Namespace) -> None:
+    if args.jobs > 1 and len(args.caches) > 1:
+        _run_parallel(args)
+        return
     P, bias, log2_d, seed, hash_id = load_judge(args.model)
     ft = None
     if args.script:

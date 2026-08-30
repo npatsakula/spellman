@@ -41,6 +41,15 @@ LICENSES: dict[str, str] = {
     "tahrirchi/uz-crawl": "Apache-2.0",
     "tahrirchi/uz-books-v2": "MIT",
     "alifbank/Tajik": "MIT",
+    # The spellman crawl datasets (crawl/dataset.py): MIT compilation over
+    # public news/library sites + Telegram/VK community posts, with
+    # provenance columns (source/id) for attribution.
+    "vpermilp/lid-sah": "MIT (compilation; row texts from cited public sources)",
+    "vpermilp/lid-tyv": "MIT (compilation; row texts from cited public sources)",
+    "vpermilp/lid-kpv": "MIT (compilation; row texts from cited public sources)",
+    "vpermilp/lid-mhr": "MIT (compilation; row texts from cited public sources)",
+    "vpermilp/lid-oss": "MIT (compilation; row texts from cited public sources)",
+    "vpermilp/lid-udm": "MIT (compilation; row texts from cited public sources)",
     "AigizK/bashkir-russian-parallel-corpora": "CC-BY-4.0",
     "AigizK/tatar-russian-parallel-corpora": "unstated on card",
     "Agisight/tyv-rus-200k": "CC-BY-4.0",

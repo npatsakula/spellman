@@ -289,6 +289,10 @@ def _replay_argv(argv: list[str]) -> list[str]:
     if manifest_path is None:
         raise SystemExit("--from-manifest requires a path")
     recorded = json.loads(Path(manifest_path).read_text(encoding="utf-8"))["argv"]
+    # Manifests written through `spellman-train mix` before the cli recorded
+    # argv without its subcommand (data/v12) start with the token "mix".
+    if recorded and recorded[0] == "mix":
+        recorded = recorded[1:]
     out: list[str] = []
     skip_value = False
     for tok in recorded:

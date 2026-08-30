@@ -10,6 +10,10 @@ target/
 .claude/
 .DS_Store
 
+# secrets + licensed/PII-bearing source lists (internal use only, never ship)
+.env
+platforms.csv
+
 # data pipeline: downloads, caches, generated mixes — all rebuildable
 # (mix splits are also published to the HF dataset repo)
 train/cache/
