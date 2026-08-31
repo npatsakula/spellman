@@ -6,7 +6,7 @@ description = "Cyrillic-optimized language detection: hashed char n-grams, folde
 license = "MIT"
 repository = "https://github.com/npatsakula/spellman"
 readme = "README.md"
-keywords = ["language-detection", "language-identification", "lid", "cyrillic", "spellman"]
+keywords = ["language-detection", "nlp", "lid", "cyrillic", "spellman"]
 categories = ["text-processing", "localization"]
 # fixtures/hash_vectors.json is required by tests/hash_vectors.rs.
 include = ["src/**", "tests/**", "benches/**", "examples/**", "fixtures/**", "README.md"]
