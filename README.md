@@ -21,27 +21,33 @@ from the same eval data):
 
 | eval | rung | spellman | GlotLID v3 | fastText lid.176 |
 |---|---|---|---|---|
-| held-out mix (719,255, pristine test) | text | **98.55%** | 92.57%‡ | 81.54%* |
-| Tatoeba (37,051, out-of-domain) | word / pair / triple | **71.88 / 89.46 / 95.24** | 43.9 / 79.3 / 91.9‡ | 59.0 / 79.0 / 87.9 |
-| Tatoeba (37,051, out-of-domain) | text | 98.98% | **99.25%**‡ | 94.90%* |
-| rusentitweet (2,606 wild Russian tweets, label-audited) | text | **96.70%**† | 82.73%‡ | 90.41% |
-| COSMUS Russian (2,808 wild Telegram/reviews, gold-labeled) | text | **97.36%** | 95.69%‡ | 96.65% |
-| short utterances (574, orthography-certified ≤19 chars) | text | **94.25%**† | 71.25%‡ | 84.32% |
-| literary Russian (2,000 classic-prose sentences, held-out novel) | text | 98.65% | — | — |
+| held-out mix (719,255, pristine test) | text | **98.62%** | 92.57%‡ | 81.54%* |
+| Tatoeba (37,051, out-of-domain) | word / pair / triple | **72.06 / 89.60 / 95.21** | 43.9 / 79.3 / 91.9‡ | 59.0 / 79.0 / 87.9 |
+| Tatoeba (37,051, out-of-domain) | text | 99.01% | **99.25%**‡ | 94.90%* |
+| rusentitweet (2,606 wild Russian tweets, label-audited) | text | **96.89%**† | 82.73%‡ | 90.41% |
+| COSMUS Russian (2,808 wild Telegram/reviews, gold-labeled) | text | **97.40%** | 95.69%‡ | 96.65% |
+| short utterances (574, orthography-certified ≤19 chars) | text | **94.95%**† | 71.25%‡ | 84.32% |
+| literary Russian (2,000 classic-prose sentences, held-out novel) | text | 98.90% | — | — |
 
-The current model (v13c, 2026-08-30) adds the six crawl datasets
-`vpermilp/lid-{sah,tyv,kpv,mhr,oss,udm}` (~907k rows of news/library +
-Telegram/VK text, MIT) to the v12 recipe and raises the per-language cap
-from 32k to 120k rows. The data fills every thin Cyrillic class to the cap;
-the cap is what moved the referees — v12 scored 98.64 / 93.28 / 96.69 /
-90.24 / 96.20 on the same frozen files (Tatoeba / rusentitweet / COSMUS /
-short / literary), so v13c gains +3.4pp on wild Russian tweets and +4.0pp on
-short utterances with no language losing F1. v12 was the commercial-clean
-rebuild (every NC-licensed upstream replaced or row-filtered, orthographic
-pollution gates on the replacement crawls); v13c keeps that license posture
-— the added datasets are MIT compilations of public sources. The
-experiment series (cap ladder, the FineWeb-2 top-up that *hurt*) is in
-`docs/experiments.md`.
+The current model (v14, 2026-08-31) is the architecture-review retrain of
+v13c: hash buckets 2^17 → 2^18 (the measured collision load had reached
+~100 distinct keys per signed bucket), training truncation k 256 → 512
+tokens (57.8% of rows were trained on their first ~48 chars while
+inference reads the whole text), short-floor 0.5, and θ recalibrated by
+error-detection F1 (0.67 — flags 2.9% of val at precision 0.47, vs the
+old 5th-percentile quantile's 5.0% at 0.35). The shipped artifact is the
+int8-row store (8.9 MB; every store gates within 0.01pp of the 15.7 MB
+f16 table). Measured rejections from the same ladder: weight-decay 0
+(harmful — the AdamW default turns out to regularize collision noise),
+2^19 (best long-text numbers, breaks short), FineWeb-2 top-ups (register
+dilution). Its predecessor v13c (2026-08-30) added the six crawl
+datasets `vpermilp/lid-{sah,tyv,kpv,mhr,oss,udm}` (~907k rows of
+news/library + Telegram/VK text, MIT) to the v12 recipe and raised the
+per-language cap from 32k to 120k — the cap is what moved the referees
+(+3.4pp wild Russian, +4.0pp short over v12), with no language losing
+F1. v12 was the commercial-clean rebuild (every NC-licensed upstream
+replaced or row-filtered); later models keep that license posture. The
+full experiment series is in `docs/experiments.md`.
 
 § measured on the v11c-era split (same recipe shape, NC predecessors);
 every spellman cell and the held-out baseline cells above are same-split.
@@ -156,11 +162,11 @@ What the numbers say:
   model) at ~3.5× spellman bulk; lingua high-accuracy is ~64× slower
   than spellman bulk (325 vs 5.1 µs/sample, BEAM=16).
 
-Per-language on the held-out mix (v13c, 719k rows): tgk/mhr/oss/deu/chv
-F1 1.00, sah/uzn/kir/udm/bak/kaz/mon/tyv/tat/kpv/srp/bel/mkd 0.98–1.00 —
-the residual confusions are the genuinely hard ones (rus F1 0.85 on the
-short-wild-heavy slice, fra 0.94, spa/ukr 0.95, bul/eng 0.97;
-rus-attraction on short low-resource texts).
+Per-language on the held-out mix (v14, 719k rows): tgk/mhr/oss/deu/chv/
+sah/kpv/tat F1 1.00, uzn/kir/udm/bak/kaz/mon/tyv/srp/bel 0.99 — the
+residual confusions are the genuinely hard ones (rus F1 0.85 on the
+short-wild-heavy slice, fra 0.94, spa 0.95, ukr 0.96, por/bul 0.97,
+eng/mkd 0.98; rus-attraction on short low-resource texts).
 
 Performance (fp16 svod JIT plans, BEAM=16, k=1024, Tatoeba eval —
 37,051 documents):

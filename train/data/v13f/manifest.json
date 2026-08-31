@@ -1,0 +1,1280 @@
+{
+ "argv": [
+  "--source",
+  "fineweb2:docs_per_lang=3600,per_doc=4,langs_exclude=tgk",
+  "--source",
+  "tatoeba:train_per_lang=8000",
+  "--source",
+  "hf:repo=cis-lmu/Glot500,config=tat_Cyrl,exclude=dataset=Leipzig*|nllb_other_til|mtdata|Bible*,lang=tat,docs=3000,per_doc=4",
+  "--source",
+  "hf:repo=cis-lmu/Glot500,config=tgk_Cyrl,lang=tgk,exclude=dataset=Leipzig*|nllb_other_til|mtdata|Bible*,no_chars=ўы,docs=12000,per_doc=2",
+  "--source",
+  "hf:repo=cis-lmu/Glot500,config=sah_Cyrl,exclude=dataset=Leipzig*|nllb_other_til|mtdata|Bible*,lang=sah,docs=3000,per_doc=4",
+  "--source",
+  "hf:repo=cis-lmu/Glot500,config=udm_Cyrl,exclude=dataset=Leipzig*|nllb_other_til|mtdata|Bible*,lang=udm,docs=14000,per_doc=2",
+  "--source",
+  "hf:repo=cis-lmu/Glot500,config=tyv_Cyrl,exclude=dataset=Leipzig*|nllb_other_til|mtdata|Bible*,lang=tyv,docs=15000,per_doc=2",
+  "--source",
+  "hf:repo=ailabykt/sakha-corpus-mono,lang=sah,docs=8000,per_doc=3",
+  "--source",
+  "hf:repo=wikimedia/wikipedia,config=20231101.tt,lang=tat,docs=2000,per_doc=4",
+  "--source",
+  "hf:repo=AigizK/tatar-russian-parallel-corpora,column=tat,lang=tat,docs=999999,per_doc=2,streaming=False",
+  "--source",
+  "hf:repo=HuggingFaceFW/fineweb-2,config=tat_Latn,lang=tat,docs=10000,per_doc=3",
+  "--source",
+  "hf:repo=AigizK/bashkir-russian-parallel-corpora,column=ba,lang=bak,docs=30000,per_doc=2",
+  "--source",
+  "hf:repo=Agisight/tyv-rus-200k,column=tyv,lang=tyv,docs=30000,per_doc=2",
+  "--source",
+  "hf:repo=ai-forever/udmurt-corpora,lang=udm,docs=30000,per_doc=2",
+  "--source",
+  "hf:repo=udmurtNLP/zerpal,column=string,lang=udm,docs=20000,per_doc=3",
+  "--source",
+  "hf:repo=d0rj/ru-mhr-parallel,column=mhr,lang=mhr,docs=30000,per_doc=2",
+  "--source",
+  "opus:corpus=translatewiki,src=ce,tgt=en,lang=che",
+  "--source",
+  "hf:repo=NM-development/nmd-ce-ru-171k-v0,column=ce,lang=che,docs=999999,per_doc=1,streaming=False",
+  "--source",
+  "csv:path=rusentitweet_train.csv,column=text,lang=rus",
+  "--source",
+  "jsonl:path=seeds/hard_negatives.jsonl",
+  "--source",
+  "jsonl:path=cache/hard_negatives_scaled.jsonl",
+  "--source",
+  "ukr_tweets:limit=50000",
+  "--source",
+  "mn_social",
+  "--source",
+  "kazsandra",
+  "--source",
+  "hf:repo=alexantonov/chuvash_mono,column=chv,lang=chv,raw=True,docs=500000,max_chars=512",
+  "--source",
+  "hf:repo=alexantonov/chuvash_russian_parallel,column=chv,lang=chv,raw=True,docs=300000,max_chars=512",
+  "--source",
+  "hf:repo=tahrirchi/uz-crawl,files=data/telegram_blogs*,lang=uzn,raw=True,cyr=0.6,docs=400000,max_chars=512",
+  "--source",
+  "hf:repo=averoo/sakha-oscar,lang=sah,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=allenai/MADLAD-400,files=data/tyv/tyv_clean_0000.jsonl.gz,lang=tyv,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=allenai/MADLAD-400,files=data/sah/sah_clean_0000.jsonl.gz,lang=sah,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=YShynkarov/COSMUS,column=document_content,where=language_manual=ukrainian,lang=ukr,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=maaxap/BelarusianGLUE,config=besls,column=sentence,lang=bel,raw=True,docs=0,streaming=False",
+  "--source",
+  "hf:repo=DGurgurov/macedonian_sa,column=text,lang=mkd,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=DGurgurov/bulgarian_sa,column=text,lang=bul,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/english/train.jsonl,lang=eng,raw=True,docs=0,streaming=False",
+  "--source",
+  "hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/french/train.jsonl,lang=fra,raw=True,docs=0,streaming=False",
+  "--source",
+  "hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/german/train.jsonl,lang=deu,raw=True,docs=0,streaming=False",
+  "--source",
+  "hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/portuguese/train.jsonl,lang=por,raw=True,docs=0,streaming=False",
+  "--source",
+  "hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/spanish/train.jsonl,lang=spa,raw=True,docs=0,streaming=False",
+  "--source",
+  "hf:repo=contemmcm/sentiment140,column=text,lang=eng,raw=True,split=complete,docs=400000,max_chars=512",
+  "--source",
+  "hf:repo=FrancophonIA/french_tweets,lang=fra,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=fpaulino/portuguese-tweets,column=tweet_text,lang=por,raw=True,docs=120000,max_chars=512",
+  "--source",
+  "hf:repo=mteb/told-br,lang=por,raw=True,drop_cjk=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=NLP-UniBW/tweets_about_german_politicians_jan_feb_2025,where=language=de,lang=deu,raw=True,docs=0,max_chars=512",
+  "--source",
+  "hf:repo=pysentimiento/spanish-tweets,files=data/train-00000-of-00166-*.parquet,lang=spa,raw=True,docs=400000,max_chars=512",
+  "--source",
+  "ukr_tweets:lang=ukr,twitter_lang=uk,min_chars=3,max_chars=19,cyr=0.2,limit=200000",
+  "--source",
+  "ukr_tweets:lang=rus,twitter_lang=ru,min_chars=3,max_chars=19,cyr=0.2,limit=100000",
+  "--source",
+  "kazsandra:min_chars=3,max_chars=19,cyr=0.2",
+  "--source",
+  "mn_social:min_chars=3,max_chars=19",
+  "--source",
+  "hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/english/train.jsonl,lang=eng,raw=True,docs=0,streaming=False,min_chars=3,max_chars=19",
+  "--source",
+  "hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/french/train.jsonl,lang=fra,raw=True,docs=0,streaming=False,min_chars=3,max_chars=19",
+  "--source",
+  "hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/portuguese/train.jsonl,lang=por,raw=True,docs=0,streaming=False,min_chars=3,max_chars=19",
+  "--source",
+  "hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/german/train.jsonl,lang=deu,raw=True,docs=0,streaming=False,min_chars=3,max_chars=19",
+  "--source",
+  "hf:repo=cardiffnlp/tweet_sentiment_multilingual,files=data/spanish/train.jsonl,lang=spa,raw=True,docs=0,streaming=False,min_chars=3,max_chars=19",
+  "--source",
+  "hf:repo=mteb/told-br,lang=por,raw=True,drop_cjk=True,docs=0,streaming=False,min_chars=3,max_chars=19",
+  "--source",
+  "hf:repo=FrancophonIA/french_tweets,lang=fra,raw=True,docs=0,streaming=False,min_chars=3,max_chars=19",
+  "--source",
+  "hf:repo=contemmcm/sentiment140,column=text,lang=eng,raw=True,split=complete,docs=400000,min_chars=3,max_chars=19",
+  "--source",
+  "hf:repo=DGurgurov/macedonian_sa,column=text,lang=mkd,raw=True,docs=0,streaming=False,min_chars=3,max_chars=19",
+  "--source",
+  "hf:repo=DGurgurov/bulgarian_sa,column=text,lang=bul,raw=True,docs=0,streaming=False,min_chars=3,max_chars=19",
+  "--source",
+  "diverse:lang=rus,pool_repo=HuggingFaceFW/fineweb-2,pool_config=rus_Cyrl,pool_docs=300000,budget=20000",
+  "--source",
+  "diverse:lang=ukr,pool_repo=HuggingFaceFW/fineweb-2,pool_config=ukr_Cyrl,pool_docs=300000,budget=20000",
+  "--source",
+  "hf:repo=YShynkarov/COSMUS,column=document_content,where=language_manual=russian,lang=rus,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "csv:path=rusentitweet_train.csv,column=text,lang=rus,min_chars=3,max_chars=19",
+  "--source",
+  "jsonl:path=seeds/relabel_rus.jsonl",
+  "--source",
+  "diverse:lang=rus,pool_file=cache/wikisource-5da9d07b30.jsonl,budget=12000",
+  "--source",
+  "diverse:lang=kaz,pool_file=cache/kazsandra-eb6571e000.jsonl,budget=16000",
+  "--source",
+  "diverse:lang=kir,pool_repo=HPLT/HPLT2.0_cleaned,pool_config=kir_Cyrl,pool_docs=200000,budget=16000,pool_no_chars=ҕһ",
+  "--source",
+  "diverse:lang=tgk,pool_file=cache/hf-b407fce95d.jsonl,budget=16000",
+  "--source",
+  "diverse:lang=uzn,pool_file=cache/hf-1f351fe715.jsonl,budget=16000",
+  "--source",
+  "diverse:lang=tat,pool_file=cache/hf-c2a1d6fbcb.jsonl,budget=16000",
+  "--source",
+  "diverse:lang=bak,pool_file=cache/hf-b242f3ef58.jsonl,budget=16000",
+  "--source",
+  "diverse:lang=chv,pool_file=cache/hf-7e962c6753.jsonl,budget=16000",
+  "--source",
+  "diverse:lang=sah,pool_file=cache/hf-0bea6ddfdd.jsonl,budget=16000",
+  "--source",
+  "diverse:lang=tyv,pool_file=cache/hf-cd00eaba11.jsonl,budget=16000",
+  "--source",
+  "hf:repo=allenai/MADLAD-400,files=data/ce/ce_clean_0000.jsonl.gz,lang=che,raw=True,docs=0,streaming=False,max_chars=512,cyr=0.6",
+  "--source",
+  "hf:repo=allenai/MADLAD-400,files=data/ce/ce_noisy_0000.jsonl.gz,lang=che,raw=True,docs=0,streaming=False,max_chars=512,cyr=0.6",
+  "--source",
+  "hf:repo=wikimedia/wikipedia,config=20231101.ce,lang=che,docs=30000,per_doc=3",
+  "--source",
+  "hf:repo=HPLT/HPLT2.0_cleaned,config=kir_Cyrl,lang=kir,docs=30000,per_doc=4,no_chars=ҕһ",
+  "--source",
+  "hf:repo=allenai/MADLAD-400,files=data/ky/ky_clean_0000.jsonl.gz,lang=kir,raw=True,docs=0,streaming=False,max_chars=512,cyr=0.6",
+  "--source",
+  "hf:repo=wikimedia/wikipedia,config=20231101.ky,lang=kir,docs=10000,per_doc=4",
+  "--source",
+  "opus:corpus=GoURMET,src=ky,tgt=ru,lang=kir",
+  "--source",
+  "hf:repo=HPLT/HPLT2.0_cleaned,config=tgk_Cyrl,lang=tgk,docs=30000,per_doc=4,no_chars=ўы",
+  "--source",
+  "hf:repo=alifbank/Tajik,files=tg_sentences.txt,lang=tgk,raw=True,docs=0,streaming=False,min_chars=20,max_chars=512",
+  "--source",
+  "hf:repo=allenai/MADLAD-400,files=data/tg/tg_clean_0000.jsonl.gz,lang=tgk,raw=True,docs=0,streaming=False,max_chars=512,cyr=0.6,no_chars=ўы",
+  "--source",
+  "hf:repo=wikimedia/wikipedia,config=20231101.tg,lang=tgk,docs=10000,per_doc=4",
+  "--source",
+  "fineweb2:docs_per_lang=3600,per_doc=4,langs=tgk,no_chars=ўы",
+  "--source",
+  "hf:repo=tahrirchi/uz-books-v2,files=data/cyr-*.parquet,lang=uzn,docs=30000,per_doc=4",
+  "--source",
+  "hf:repo=cis-lmu/Glot500,config=uzb_Cyrl,lang=uzn,raw=True,docs=200000,max_chars=512,cyr=0.6,where=dataset=Earthlings",
+  "--cap-per-lang",
+  "32000",
+  "--short-floor",
+  "0.40",
+  "--wild-augment",
+  "0.3",
+  "--short-augment",
+  "0.2",
+  "--jobs",
+  "3",
+  "--source",
+  "hf:repo=vpermilp/lid-sah,config=moderated,lang=sah,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=vpermilp/lid-sah,config=wild,lang=sah,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=vpermilp/lid-tyv,config=moderated,lang=tyv,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=vpermilp/lid-tyv,config=wild,lang=tyv,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=vpermilp/lid-kpv,config=moderated,lang=kpv,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=vpermilp/lid-kpv,config=wild,lang=kpv,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=vpermilp/lid-mhr,config=moderated,lang=mhr,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=vpermilp/lid-mhr,config=wild,lang=mhr,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=vpermilp/lid-oss,config=moderated,lang=oss,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=vpermilp/lid-oss,config=wild,lang=oss,raw=True,docs=0,streaming=False,max_chars=512",
+  "--source",
+  "hf:repo=vpermilp/lid-udm,config=wild,lang=udm,raw=True,docs=0,streaming=False,max_chars=512",
+  "--jobs",
+  "3",
+  "--cap-per-lang",
+  "120000",
+  "--jobs",
+  "3",
+  "--out",
+  "data/v13f",
+  "--short-floor",
+  "0.5",
+  "--jobs",
+  "3"
+ ],
+ "seed": 42,
+ "cap_per_lang": 120000,
+ "wild_augment": 0.3,
+ "short_augment": 0.2,
+ "short_floor": 0.5,
+ "format": "parquet",
+ "splits": {
+  "train": 2519584,
+  "val": 975948,
+  "test": 719255
+ },
+ "sources": [
+  [
+   "fineweb2",
+   {
+    "docs_per_lang": 3600,
+    "per_doc": 4,
+    "langs_exclude": "tgk"
+   }
+  ],
+  [
+   "tatoeba",
+   {
+    "train_per_lang": 8000
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cis-lmu/Glot500",
+    "config": "tat_Cyrl",
+    "exclude": "dataset=Leipzig*|nllb_other_til|mtdata|Bible*",
+    "lang": "tat",
+    "docs": 3000,
+    "per_doc": 4
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cis-lmu/Glot500",
+    "config": "tgk_Cyrl",
+    "lang": "tgk",
+    "exclude": "dataset=Leipzig*|nllb_other_til|mtdata|Bible*",
+    "no_chars": "ўы",
+    "docs": 12000,
+    "per_doc": 2
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cis-lmu/Glot500",
+    "config": "sah_Cyrl",
+    "exclude": "dataset=Leipzig*|nllb_other_til|mtdata|Bible*",
+    "lang": "sah",
+    "docs": 3000,
+    "per_doc": 4
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cis-lmu/Glot500",
+    "config": "udm_Cyrl",
+    "exclude": "dataset=Leipzig*|nllb_other_til|mtdata|Bible*",
+    "lang": "udm",
+    "docs": 14000,
+    "per_doc": 2
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cis-lmu/Glot500",
+    "config": "tyv_Cyrl",
+    "exclude": "dataset=Leipzig*|nllb_other_til|mtdata|Bible*",
+    "lang": "tyv",
+    "docs": 15000,
+    "per_doc": 2
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "ailabykt/sakha-corpus-mono",
+    "lang": "sah",
+    "docs": 8000,
+    "per_doc": 3
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "wikimedia/wikipedia",
+    "config": "20231101.tt",
+    "lang": "tat",
+    "docs": 2000,
+    "per_doc": 4
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "AigizK/tatar-russian-parallel-corpora",
+    "column": "tat",
+    "lang": "tat",
+    "docs": 999999,
+    "per_doc": 2,
+    "streaming": false
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "HuggingFaceFW/fineweb-2",
+    "config": "tat_Latn",
+    "lang": "tat",
+    "docs": 10000,
+    "per_doc": 3
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "AigizK/bashkir-russian-parallel-corpora",
+    "column": "ba",
+    "lang": "bak",
+    "docs": 30000,
+    "per_doc": 2
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "Agisight/tyv-rus-200k",
+    "column": "tyv",
+    "lang": "tyv",
+    "docs": 30000,
+    "per_doc": 2
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "ai-forever/udmurt-corpora",
+    "lang": "udm",
+    "docs": 30000,
+    "per_doc": 2
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "udmurtNLP/zerpal",
+    "column": "string",
+    "lang": "udm",
+    "docs": 20000,
+    "per_doc": 3
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "d0rj/ru-mhr-parallel",
+    "column": "mhr",
+    "lang": "mhr",
+    "docs": 30000,
+    "per_doc": 2
+   }
+  ],
+  [
+   "opus",
+   {
+    "corpus": "translatewiki",
+    "src": "ce",
+    "tgt": "en",
+    "lang": "che"
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "NM-development/nmd-ce-ru-171k-v0",
+    "column": "ce",
+    "lang": "che",
+    "docs": 999999,
+    "per_doc": 1,
+    "streaming": false
+   }
+  ],
+  [
+   "csv",
+   {
+    "path": "rusentitweet_train.csv",
+    "column": "text",
+    "lang": "rus"
+   }
+  ],
+  [
+   "jsonl",
+   {
+    "path": "seeds/hard_negatives.jsonl"
+   }
+  ],
+  [
+   "jsonl",
+   {
+    "path": "cache/hard_negatives_scaled.jsonl"
+   }
+  ],
+  [
+   "ukr_tweets",
+   {
+    "limit": 50000
+   }
+  ],
+  [
+   "mn_social",
+   {}
+  ],
+  [
+   "kazsandra",
+   {}
+  ],
+  [
+   "hf",
+   {
+    "repo": "alexantonov/chuvash_mono",
+    "column": "chv",
+    "lang": "chv",
+    "raw": true,
+    "docs": 500000,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "alexantonov/chuvash_russian_parallel",
+    "column": "chv",
+    "lang": "chv",
+    "raw": true,
+    "docs": 300000,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "tahrirchi/uz-crawl",
+    "files": "data/telegram_blogs*",
+    "lang": "uzn",
+    "raw": true,
+    "cyr": 0.6,
+    "docs": 400000,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "averoo/sakha-oscar",
+    "lang": "sah",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "allenai/MADLAD-400",
+    "files": "data/tyv/tyv_clean_0000.jsonl.gz",
+    "lang": "tyv",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "allenai/MADLAD-400",
+    "files": "data/sah/sah_clean_0000.jsonl.gz",
+    "lang": "sah",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "YShynkarov/COSMUS",
+    "column": "document_content",
+    "where": "language_manual=ukrainian",
+    "lang": "ukr",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "maaxap/BelarusianGLUE",
+    "config": "besls",
+    "column": "sentence",
+    "lang": "bel",
+    "raw": true,
+    "docs": 0,
+    "streaming": false
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "DGurgurov/macedonian_sa",
+    "column": "text",
+    "lang": "mkd",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "DGurgurov/bulgarian_sa",
+    "column": "text",
+    "lang": "bul",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cardiffnlp/tweet_sentiment_multilingual",
+    "files": "data/english/train.jsonl",
+    "lang": "eng",
+    "raw": true,
+    "docs": 0,
+    "streaming": false
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cardiffnlp/tweet_sentiment_multilingual",
+    "files": "data/french/train.jsonl",
+    "lang": "fra",
+    "raw": true,
+    "docs": 0,
+    "streaming": false
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cardiffnlp/tweet_sentiment_multilingual",
+    "files": "data/german/train.jsonl",
+    "lang": "deu",
+    "raw": true,
+    "docs": 0,
+    "streaming": false
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cardiffnlp/tweet_sentiment_multilingual",
+    "files": "data/portuguese/train.jsonl",
+    "lang": "por",
+    "raw": true,
+    "docs": 0,
+    "streaming": false
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cardiffnlp/tweet_sentiment_multilingual",
+    "files": "data/spanish/train.jsonl",
+    "lang": "spa",
+    "raw": true,
+    "docs": 0,
+    "streaming": false
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "contemmcm/sentiment140",
+    "column": "text",
+    "lang": "eng",
+    "raw": true,
+    "split": "complete",
+    "docs": 400000,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "FrancophonIA/french_tweets",
+    "lang": "fra",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "fpaulino/portuguese-tweets",
+    "column": "tweet_text",
+    "lang": "por",
+    "raw": true,
+    "docs": 120000,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "mteb/told-br",
+    "lang": "por",
+    "raw": true,
+    "drop_cjk": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "NLP-UniBW/tweets_about_german_politicians_jan_feb_2025",
+    "where": "language=de",
+    "lang": "deu",
+    "raw": true,
+    "docs": 0,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "pysentimiento/spanish-tweets",
+    "files": "data/train-00000-of-00166-*.parquet",
+    "lang": "spa",
+    "raw": true,
+    "docs": 400000,
+    "max_chars": 512
+   }
+  ],
+  [
+   "ukr_tweets",
+   {
+    "lang": "ukr",
+    "twitter_lang": "uk",
+    "min_chars": 3,
+    "max_chars": 19,
+    "cyr": 0.2,
+    "limit": 200000
+   }
+  ],
+  [
+   "ukr_tweets",
+   {
+    "lang": "rus",
+    "twitter_lang": "ru",
+    "min_chars": 3,
+    "max_chars": 19,
+    "cyr": 0.2,
+    "limit": 100000
+   }
+  ],
+  [
+   "kazsandra",
+   {
+    "min_chars": 3,
+    "max_chars": 19,
+    "cyr": 0.2
+   }
+  ],
+  [
+   "mn_social",
+   {
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cardiffnlp/tweet_sentiment_multilingual",
+    "files": "data/english/train.jsonl",
+    "lang": "eng",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cardiffnlp/tweet_sentiment_multilingual",
+    "files": "data/french/train.jsonl",
+    "lang": "fra",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cardiffnlp/tweet_sentiment_multilingual",
+    "files": "data/portuguese/train.jsonl",
+    "lang": "por",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cardiffnlp/tweet_sentiment_multilingual",
+    "files": "data/german/train.jsonl",
+    "lang": "deu",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cardiffnlp/tweet_sentiment_multilingual",
+    "files": "data/spanish/train.jsonl",
+    "lang": "spa",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "mteb/told-br",
+    "lang": "por",
+    "raw": true,
+    "drop_cjk": true,
+    "docs": 0,
+    "streaming": false,
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "FrancophonIA/french_tweets",
+    "lang": "fra",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "contemmcm/sentiment140",
+    "column": "text",
+    "lang": "eng",
+    "raw": true,
+    "split": "complete",
+    "docs": 400000,
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "DGurgurov/macedonian_sa",
+    "column": "text",
+    "lang": "mkd",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "DGurgurov/bulgarian_sa",
+    "column": "text",
+    "lang": "bul",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "rus",
+    "pool_repo": "HuggingFaceFW/fineweb-2",
+    "pool_config": "rus_Cyrl",
+    "pool_docs": 300000,
+    "budget": 20000
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "ukr",
+    "pool_repo": "HuggingFaceFW/fineweb-2",
+    "pool_config": "ukr_Cyrl",
+    "pool_docs": 300000,
+    "budget": 20000
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "YShynkarov/COSMUS",
+    "column": "document_content",
+    "where": "language_manual=russian",
+    "lang": "rus",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "csv",
+   {
+    "path": "rusentitweet_train.csv",
+    "column": "text",
+    "lang": "rus",
+    "min_chars": 3,
+    "max_chars": 19
+   }
+  ],
+  [
+   "jsonl",
+   {
+    "path": "seeds/relabel_rus.jsonl"
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "rus",
+    "pool_file": "cache/wikisource-5da9d07b30.jsonl",
+    "budget": 12000
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "kaz",
+    "pool_file": "cache/kazsandra-eb6571e000.jsonl",
+    "budget": 16000
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "kir",
+    "pool_repo": "HPLT/HPLT2.0_cleaned",
+    "pool_config": "kir_Cyrl",
+    "pool_docs": 200000,
+    "budget": 16000,
+    "pool_no_chars": "ҕһ"
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "tgk",
+    "pool_file": "cache/hf-b407fce95d.jsonl",
+    "budget": 16000
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "uzn",
+    "pool_file": "cache/hf-1f351fe715.jsonl",
+    "budget": 16000
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "tat",
+    "pool_file": "cache/hf-c2a1d6fbcb.jsonl",
+    "budget": 16000
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "bak",
+    "pool_file": "cache/hf-b242f3ef58.jsonl",
+    "budget": 16000
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "chv",
+    "pool_file": "cache/hf-7e962c6753.jsonl",
+    "budget": 16000
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "sah",
+    "pool_file": "cache/hf-0bea6ddfdd.jsonl",
+    "budget": 16000
+   }
+  ],
+  [
+   "diverse",
+   {
+    "lang": "tyv",
+    "pool_file": "cache/hf-cd00eaba11.jsonl",
+    "budget": 16000
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "allenai/MADLAD-400",
+    "files": "data/ce/ce_clean_0000.jsonl.gz",
+    "lang": "che",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512,
+    "cyr": 0.6
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "allenai/MADLAD-400",
+    "files": "data/ce/ce_noisy_0000.jsonl.gz",
+    "lang": "che",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512,
+    "cyr": 0.6
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "wikimedia/wikipedia",
+    "config": "20231101.ce",
+    "lang": "che",
+    "docs": 30000,
+    "per_doc": 3
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "HPLT/HPLT2.0_cleaned",
+    "config": "kir_Cyrl",
+    "lang": "kir",
+    "docs": 30000,
+    "per_doc": 4,
+    "no_chars": "ҕһ"
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "allenai/MADLAD-400",
+    "files": "data/ky/ky_clean_0000.jsonl.gz",
+    "lang": "kir",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512,
+    "cyr": 0.6
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "wikimedia/wikipedia",
+    "config": "20231101.ky",
+    "lang": "kir",
+    "docs": 10000,
+    "per_doc": 4
+   }
+  ],
+  [
+   "opus",
+   {
+    "corpus": "GoURMET",
+    "src": "ky",
+    "tgt": "ru",
+    "lang": "kir"
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "HPLT/HPLT2.0_cleaned",
+    "config": "tgk_Cyrl",
+    "lang": "tgk",
+    "docs": 30000,
+    "per_doc": 4,
+    "no_chars": "ўы"
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "alifbank/Tajik",
+    "files": "tg_sentences.txt",
+    "lang": "tgk",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "min_chars": 20,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "allenai/MADLAD-400",
+    "files": "data/tg/tg_clean_0000.jsonl.gz",
+    "lang": "tgk",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512,
+    "cyr": 0.6,
+    "no_chars": "ўы"
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "wikimedia/wikipedia",
+    "config": "20231101.tg",
+    "lang": "tgk",
+    "docs": 10000,
+    "per_doc": 4
+   }
+  ],
+  [
+   "fineweb2",
+   {
+    "docs_per_lang": 3600,
+    "per_doc": 4,
+    "langs": "tgk",
+    "no_chars": "ўы"
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "tahrirchi/uz-books-v2",
+    "files": "data/cyr-*.parquet",
+    "lang": "uzn",
+    "docs": 30000,
+    "per_doc": 4
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "cis-lmu/Glot500",
+    "config": "uzb_Cyrl",
+    "lang": "uzn",
+    "raw": true,
+    "docs": 200000,
+    "max_chars": 512,
+    "cyr": 0.6,
+    "where": "dataset=Earthlings"
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "vpermilp/lid-sah",
+    "config": "moderated",
+    "lang": "sah",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "vpermilp/lid-sah",
+    "config": "wild",
+    "lang": "sah",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "vpermilp/lid-tyv",
+    "config": "moderated",
+    "lang": "tyv",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "vpermilp/lid-tyv",
+    "config": "wild",
+    "lang": "tyv",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "vpermilp/lid-kpv",
+    "config": "moderated",
+    "lang": "kpv",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "vpermilp/lid-kpv",
+    "config": "wild",
+    "lang": "kpv",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "vpermilp/lid-mhr",
+    "config": "moderated",
+    "lang": "mhr",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "vpermilp/lid-mhr",
+    "config": "wild",
+    "lang": "mhr",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "vpermilp/lid-oss",
+    "config": "moderated",
+    "lang": "oss",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "vpermilp/lid-oss",
+    "config": "wild",
+    "lang": "oss",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ],
+  [
+   "hf",
+   {
+    "repo": "vpermilp/lid-udm",
+    "config": "wild",
+    "lang": "udm",
+    "raw": true,
+    "docs": 0,
+    "streaming": false,
+    "max_chars": 512
+   }
+  ]
+ ]
+}

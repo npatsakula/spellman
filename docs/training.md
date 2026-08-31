@@ -282,7 +282,7 @@ the dataset are different repo types, so the name hosts both without
 collision:
 
 ```bash
-uv run spellman-train publish dataset --dir data/v13c   # parquet + manifest + rendered card
+uv run spellman-train publish dataset --dir data/v13f   # parquet + manifest + rendered card
 uv run spellman-train publish model    --dir ../model   # model.json + model.safetensors (+ README.md)
 ```
 
@@ -294,11 +294,12 @@ publish with a fresh `hf download vpermilp/spellman --repo-type dataset`.
 
 ## Current model: recipe and results
 
-v13c = the v12 recipe (`recipes/v12.sh`, its promoted manifest at
-`train/data/v12/manifest.json`) + the six crawl datasets
-`vpermilp/lid-{sah,tyv,kpv,mhr,oss,udm}` as 11 raw `hf:` lanes
-(`recipes/v13.sh`), **120k-per-language cap** (mix `--cap-per-lang
-120000`, train `--per-lang-cap 120000`), diverse budgets ×1.5
+v14 = the v13c mix (v12 recipe + the six crawl datasets
+`vpermilp/lid-{sah,tyv,kpv,mhr,oss,udm}` as 11 raw `hf:` lanes,
+120k-per-language cap) re-mixed with `--short-floor 0.5` and trained at
+**`--log2-d 18 --k 512`** (`recipes/v14.sh`; θ recalibrated by
+error-detection F1 = 0.67; root artifact = int8-row store), diverse
+budgets ×1.5
 (rus/ukr 20k, Turkic 16k), a 12k wikisource literary lane for rus, and
 `--short-floor 0.40`: FineWeb-2 line-windows + ~104k Tatoeba training
 sentences + per-language top-ups (Tatar Glot500/Wikipedia/parallel +
@@ -325,16 +326,16 @@ texts, Latin-script Tatar short sentences, tgk data thinness.
 
 Every `mix` run records its exact recipe into
 `<out>/manifest.json` — the current model's recipe is
-`train/data/v13c/manifest.json` (also in the published dataset). Replay
+`train/data/v13f/manifest.json` (also in the published dataset). Replay
 it (warm caches) into a fresh parquet mix with:
 
 ```bash
-uv run spellman-train mix --from-manifest data/v13c/manifest.json --out data/v13c
+uv run spellman-train mix --from-manifest data/v13f/manifest.json --out data/v13f
 ```
 
 On a fresh machine the caches rebuild by re-downloading everything
 (`bash recipes/v12-pools.sh` first — the diverse lanes pin pool caches —
-then `fetch --manifest data/v13c/manifest.json --jobs 4` does the rest up
+then `fetch --manifest data/v13f/manifest.json --jobs 4` does the rest up
 front
 in parallel), so the full loop is: fetch a judge model
 (`hf download vpermilp/spellman --local-dir ../model`), build the
@@ -390,7 +391,7 @@ uv run spellman-train mix --out data_mix \
 cd train && uv sync
 
 # 0. (fresh machine) prebuild caches in parallel + fetch a judge model
-uv run spellman-train fetch --manifest data/v13c/manifest.json --jobs 4
+uv run spellman-train fetch --manifest data/v13f/manifest.json --jobs 4
 hf download vpermilp/spellman --local-dir ../model
 
 # 1. mix (replays warm caches; parquet + manifest.json; --from-manifest

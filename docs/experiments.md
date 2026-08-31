@@ -309,3 +309,52 @@ single-seed (42); seed spread from v12: rst ±0.23, short ±0.53.
   arguments: mix"), `clean --jobs N`, tatoeba/opus Hub fallbacks,
   lid-* licenses in publish.py, lid-udm card (empty `moderated` config
   broke `load_dataset` for every config).
+
+## v14 — the architecture-review ladder (2026-08-31, PROMOTED)
+
+A model-critique agent reviewed the pipeline; every top recommendation was
+measured (train-only cycles off the v13c mix, scored on the v13a-split
+held-out file + the five frozen referees):
+
+| exp | held-out | tatoeba | rst | cosmus | lit | short |
+|---|---|---|---|---|---|---|
+| v13c baseline | 98.34 | 98.98 | 96.70 | 97.36 | 98.65 | 94.25 |
+| weight-decay 0 | 97.26 | 98.52 | 93.67 | 98.01 | 96.90 | 92.16 |
+| log2-d 18 | 98.39 | 99.09 | 96.82 | 97.40 | 98.75 | 94.77 |
+| log2-d 19 | 98.41 | 99.09 | 96.89 | 97.72 | 99.00 | 92.51 |
+| k 512 | 98.37 | 98.92 | 97.05 | 97.40 | 98.70 | 94.95 |
+| short-floor 0.5 | 98.36 | 99.00 | 96.85 | 97.26 | 98.70 | 94.77 |
+| d18+k512 | 98.40 | 99.00 | 96.97 | 97.44 | 98.80 | 94.43 |
+| **d18+k512+floor0.5 (v14, s42)** | 98.41 | 99.01 | 96.89 | 97.40 | 98.90 | 94.95 |
+| same, seed 43 | 98.41 | 98.94 | 96.70 | 97.33 | 98.50 | 95.47 |
+
+- **2^18 confirmed the collision analysis** (measured ~36 distinct
+  keys/signed bucket on a 24% train sample → ~100+ full-corpus): the only
+  single change up on all six columns. **2^19 overshoots** — best
+  long-text numbers, short −1.7 (features fragment/memorize).
+- **weight-decay 0 rejected decisively** (train loss 0.125→0.058, wild
+  referees collapse): torch's silently-inherited 0.01 default is genuine
+  regularization against collision noise. Now an explicit
+  `--weight-decay` flag documenting the choice.
+- **k=512** (57.8% of rows were truncated at ~48 chars at k=256): biggest
+  single short gain (+0.70) and rst +0.35.
+- Combo gains don't fully stack (both attack short); the triple is the
+  best overall row and its seed-43 replicate holds (short 95.47 — both
+  seeds above every single-change run).
+- **Zero-cycle findings**: θ by error-detection F1 beats the
+  5th-percentile quantile (v14 val: F1 0.525 vs 0.484, flags 2.9% vs
+  5.0% — shipped θ=0.67); logit prior adjustment inert; per-length bias
+  fitted on val overfits its augmented register (rejected); train↔test
+  near-dup leakage measured at **2.83%** (MinHash J≥0.5, same-lang) —
+  held-out deltas <0.1pp are not trustworthy alone, frozen referees
+  remain the decision metric; doc-level split keys are the eventual fix.
+- **Promoted 2026-08-31 (user-approved): v14** = v13f mix (v13c manifest
+  + `--short-floor 0.5`; test split byte-identical to v13c's, so
+  same-split baselines carry over) trained `--log2-d 18 --k 512`.
+  Own-split 98.62 (v13c 98.55, GlotLID 92.57, lid.176 81.54 same-split),
+  ≤20 chars 93.79. Quant gates ≤0.01pp; **root artifact switched to the
+  int8-row store** (8.9 MB vs 15.7 MB f16 at 2^18); an `f16/` subdir
+  joins the store lineup. Referee lore for the future: wild-referee
+  deltas of the winning row vs plain d18 are within seed spread — the
+  durable wins of the whole campaign are short (+0.7–1.2) and held-out
+  (+0.07 stable across seeds).

@@ -51,6 +51,13 @@ class Config:
     batch_size: int = 256
     k: int = 256  # max tokens per sample during training
     lr: float = 0.02
+    #: Decoupled weight decay. 0.01 is torch's AdamW default, which the
+    #: pipeline inherited SILENTLY for its whole history (fastText, the
+    #: design template, has none) — kept as the default so old runs
+    #: reproduce; the v13 review flagged it: at lr 0.05 it shrinks
+    #: rarely-refreshed embedding rows (rare signature n-grams) by
+    #: ~e^-2.5 between touches. --weight-decay 0 is the A/B knob.
+    weight_decay: float = 0.01
     per_lang_cap: int = 50_000
 
 def load_split(data_dir: Path, split: str) -> list[dict]:
@@ -286,6 +293,8 @@ def populate(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--k", type=int, default=256)
     ap.add_argument("--lr", type=float, default=0.02)
+    ap.add_argument("--weight-decay", type=float, default=0.01,
+                    help="AdamW decoupled decay (0.01 = the historically-implicit torch default)")
     ap.add_argument("--per-lang-cap", type=int, default=50_000)
     ap.add_argument("--hash-stats", action="store_true")
     ap.add_argument("--device", default="cpu")
@@ -321,6 +330,7 @@ def run(args: argparse.Namespace) -> None:
         batch_size=args.batch_size,
         k=args.k,
         lr=args.lr,
+        weight_decay=args.weight_decay,
         per_lang_cap=args.per_lang_cap,
     )
 
@@ -340,7 +350,7 @@ def run(args: argparse.Namespace) -> None:
 
     device = torch.device(args.device)
     model = SpellmanNet(1 << cfg.log2_d, cfg.dim, len(LANGUAGES)).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     raw = model  # eval/export use the uncompiled module
     if args.compile:
         model.post = torch.compile(model.post)
