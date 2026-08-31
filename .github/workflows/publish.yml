@@ -1,107 +1,152 @@
 name: Publish
 
-# Publishing to crates.io is driven by GitHub Releases: creating a release
-# (web UI, `gh release create vX.Y.Z -t "X.Y.Z"`, or the tag→release
-# automation of your choice) is the publish button. Re-publishing a release
-# is safe: crate versions already on crates.io are detected and skipped, so
-# re-running this workflow is idempotent.
+# Tag-driven publishing, same shape as svod's: pushing a tag `vX.Y.Z` is
+# the publish button. The workflow verifies the workspace, publishes the
+# three crates to crates.io in dependency order (language -> detector ->
+# cli, waiting for each to be resolvable before the next), then creates
+# the GitHub Release automatically (draft, prerelease auto-detected from
+# the version, generated notes + crates.io links, .crate files attached).
+# Idempotent: versions already on crates.io are detected and skipped, so
+# re-running is safe.
 #
-# BLOCKED — spellman-detector and spellman-cli are NOT published yet:
-# crates.io forbids git dependencies, and both depend on svod
-# (github.com/npatsakula/svod) via git. The svod crates ARE on crates.io,
-# but at 0.1.0-alpha.3, which predates APIs spellman-detector uses
-# (svod_model::state::load_safetensors_dir, svod_device Buffer::
-# copyout_prefix; verified 2026-08-20). Once svod publishes a release that
-# matches its git main, no git->version rewrite is needed — cargo strips
-# git/path specs from packaged manifests automatically when a `version`
-# requirement is present. Enable by:
-#   1. adding `version = "<published svod version>"` next to the git specs
-#      in spellman-detector's Cargo.toml (and `version = "0.1.0"` next to
-#      the spellman-language path dep, likewise in spellman-cli), then
-#   2. appending spellman-detector and spellman-cli to PUBLISH_CRATES
-#      below (dependency order matters: language -> detector -> cli).
-#
-# Required secret the repository owner must add once (Settings → Secrets and
-# variables → Actions): CARGO_REGISTRY_TOKEN — a crates.io API token with
-# the publish-new scope. Without it this workflow fails at the publish step.
+# Required secret (Settings -> Secrets and variables -> Actions):
+# CARGO_REGISTRY_TOKEN - a crates.io API token with publish-new scope.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
 
 permissions:
-  contents: write # upload .crate assets to the release
+  contents: write # create the release + upload .crate assets
 
 concurrency:
-  group: publish-${{ github.event.release.tag_name }}
+  group: publish-${{ github.ref_name }}
   cancel-in-progress: false
 
 env:
-  # Ordered publish list, dependencies first. Only crates whose dependency
-  # graph is registry-only — see the BLOCKED note above for the rest.
-  PUBLISH_CRATES: spellman-language
+  # Ordered publish list, dependencies first.
+  PUBLISH_CRATES: spellman-language spellman-detector spellman-cli
 
 jobs:
-  crates-io:
+  publish:
+    name: Publish crates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # spellman-language is dependency-free, so a plain stable toolchain is
-      # all the verification it needs. The full workspace (clippy, nextest,
-      # the svod-requiring crates through nix) is already gated by ci.yml on
-      # every push; this deliberately does not repeat it — and never runs
-      # cargo fmt or darwin nix.
-      - name: Verify the crates being published
+      - name: Verify the workspace
         run: |
-          cargo build --release -p spellman-language
-          cargo test -p spellman-language
+          cargo build --release --workspace
+          cargo test --release --workspace
 
-      - name: Publish to crates.io
+      - name: Publish to crates.io in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          for crate in $PUBLISH_CRATES; do
+
+          publish_crate() {
+            local crate="$1"
+            local version
             version=$(cargo pkgid -p "$crate" | sed 's/.*[#@]//')
-            echo "== $crate $version"
 
             # Produce the .crate file up front so the release asset exists
             # even when the upload below is skipped as already published.
-            # The verification build of the packaged file set runs here too.
             cargo package -p "$crate"
 
             # Idempotency: a version already on crates.io is skipped.
-            if [ -n "$version" ] && curl -sf -A "spellman-publish-workflow" \
+            if curl -sf -A "spellman-publish-workflow" \
               "https://crates.io/api/v1/crates/$crate/$version" -o /dev/null; then
               echo "::notice::$crate $version is already on crates.io — skipping upload"
-              continue
+              return 0
             fi
 
             echo "::group::cargo publish -p $crate"
+            local output
             if output=$(cargo publish -p "$crate" --token "$CARGO_REGISTRY_TOKEN" 2>&1); then
               echo "$output"
               echo "::notice::published $crate $version"
             else
-              status=$?
+              local status=$?
               echo "$output"
-              # Lost a race with a concurrent publish — treat as success.
               if echo "$output" | grep -qiE 'already (exists|uploaded|published)'; then
                 echo "::notice::$crate $version was already published — skipping"
               else
                 echo "::error::cargo publish failed for $crate"
-                exit "$status"
+                return "$status"
               fi
             fi
             echo "::endgroup::"
+          }
+
+          wait_for_crate() {
+            local crate="$1" version="$2" elapsed=0
+            echo "Waiting for $crate@$version to be resolvable..."
+            while [ $elapsed -lt 300 ]; do
+              if curl -sf -A "spellman-publish-workflow" \
+                "https://crates.io/api/v1/crates/$crate/$version" -o /dev/null; then
+                echo "$crate@$version is available"
+                return 0
+              fi
+              sleep 15
+              elapsed=$((elapsed + 15))
+            done
+            echo "::error::timed out waiting for $crate@$version"
+            return 1
+          }
+
+          for crate in $PUBLISH_CRATES; do
+            version=$(cargo pkgid -p "$crate" | sed 's/.*[#@]//')
+            publish_crate "$crate"
+            wait_for_crate "$crate" "$version"
           done
 
-      - name: Attach .crate packages to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Upload .crate packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: crates
+          path: target/package/*.crate
+
+  release:
+    name: Create GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: crates
+          path: target/package
+
+      - name: Detect pre-release and build crates.io links
+        id: meta
         run: |
-          ls -l target/package/*.crate
-          gh release upload "${{ github.event.release.tag_name }}" \
-            target/package/*.crate --clobber
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if echo "$VERSION" | grep -qE '(alpha|beta|rc)'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "links<<EOF"
+            echo "## Crates"
+            echo ""
+            for crate in spellman-language spellman-detector spellman-cli; do
+              echo "- [\`$crate\`](https://crates.io/crates/$crate/$VERSION)"
+            done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          prerelease: ${{ steps.meta.outputs.prerelease }}
+          generate_release_notes: true
+          append_body: true
+          body: ${{ steps.meta.outputs.links }}
+          files: target/package/*.crate

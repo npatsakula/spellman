@@ -12,14 +12,14 @@ categories = ["text-processing", "localization"]
 include = ["src/**", "tests/**", "benches/**", "examples/**", "fixtures/**", "README.md"]
 
 [dependencies]
-spellman-language = { path = "../spellman-language" }
-svod-tensor = { git = "https://github.com/npatsakula/svod", branch = "main" }
-svod-model = { git = "https://github.com/npatsakula/svod", branch = "main" }
-svod-macros = { git = "https://github.com/npatsakula/svod", branch = "main" }
-svod-ir = { git = "https://github.com/npatsakula/svod", branch = "main" }
-svod-dtype = { git = "https://github.com/npatsakula/svod", branch = "main" }
-svod-device = { git = "https://github.com/npatsakula/svod", branch = "main" }
-svod-runtime = { git = "https://github.com/npatsakula/svod", branch = "main" }
+spellman-language = { path = "../spellman-language", version = "0.1.0" }
+svod-tensor = "0.1.0-alpha.4"
+svod-model = "0.1.0-alpha.4"
+svod-macros = "0.1.0-alpha.4"
+svod-ir = "0.1.0-alpha.4"
+svod-dtype = "0.1.0-alpha.4"
+svod-device = "0.1.0-alpha.4"
+svod-runtime = "0.1.0-alpha.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 snafu = "0.9"
@@ -32,7 +32,7 @@ criterion = "0.5"
 tempfile = "3"
 safetensors = "0.6"
 clap = { version = "4", features = ["derive"] }
-svod-schedule = { git = "https://github.com/npatsakula/svod", branch = "main" }
+svod-schedule = "0.1.0-alpha.4"
 
 [[bench]]
 name = "bench"

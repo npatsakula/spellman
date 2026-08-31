@@ -6,7 +6,7 @@ members = [
     "crates/spellman-cli",
 ]
 # svod is an optional local checkout kept for svod development; the
-# dependency itself comes from git (npatsakula/svod, branch main), so a
+# dependency itself comes from crates.io (svod-* 0.1.0-alpha.4), so a
 # plain clone builds without it.
 # benchmarks is standalone on purpose: lingua's model crates are a heavy
 # build that must not slow down everyday workspace commands.

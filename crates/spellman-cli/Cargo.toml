@@ -15,6 +15,6 @@ name = "spellman"
 path = "src/main.rs"
 
 [dependencies]
-spellman-detector = { path = "../spellman-detector" }
+spellman-detector = { path = "../spellman-detector", version = "0.1.0" }
 clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1"
