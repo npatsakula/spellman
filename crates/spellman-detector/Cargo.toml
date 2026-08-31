@@ -1,6 +1,6 @@
 [package]
 name = "spellman-detector"
-version = "0.1.0"
+version = "0.1.0-alpha.4"
 edition = "2024"
 description = "Cyrillic-optimized language detection: hashed char n-grams, folded fastText-style model, svod JIT bulk inference"
 license = "MIT"
@@ -12,7 +12,7 @@ categories = ["text-processing", "localization"]
 include = ["src/**", "tests/**", "benches/**", "examples/**", "fixtures/**", "README.md"]
 
 [dependencies]
-spellman-language = { path = "../spellman-language", version = "0.1.0" }
+spellman-language = { path = "../spellman-language", version = "0.1.0-alpha.4" }
 svod-tensor = "0.1.0-alpha.4"
 svod-model = "0.1.0-alpha.4"
 svod-macros = "0.1.0-alpha.4"
