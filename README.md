@@ -84,10 +84,10 @@ every bucket). It predicts at ~355 µs/doc on CPU (a batched torch port
 of its softmax scorer does the full 368k held-out file in 49 s on MPS) —
 ~100× spellman on the M1 Pro,
 ~300× on the AMD 395 Max. The split is the story: spellman wins the
-wild, heavy-Cyrillic workload by 11.7pp on Russian tweets (94.5 vs 82.7) and the single-word rung by ~23pp
+wild, heavy-Cyrillic workload by 14.2pp on Russian tweets (96.9 vs 82.7) and the single-word rung by ~28pp
 (2,102-class label entropy is brutal on short text); GlotLID's far
 larger training set still wins clean out-of-domain sentences, by
-0.5pp.
+0.2pp.
 
 ### Against the Rust LID crates
 
@@ -99,37 +99,34 @@ language inventory as the detector: lingua is built from exactly the 17
 of our languages it supports, with preloaded models — its best shot on
 our workload. Rerun:
 `cd benchmarks && cargo run --release -- --model ../model --rows-per-lang 0 ../model/eval_test.tsv --by-length --per-lang`.
-(The spellman rows in the two lid-bench tables below are v12 on its
-368,507-row split; rerun the command to refresh them for v13c.)
 
 | detector | our classes | held-out: all rows | held-out: its subset | Tatoeba: all rows | Tatoeba: its subset | µs/sample |
 |---|---|---|---|---|---|---|
-| spellman (bulk) | 30/30 | **97.52%** | **97.52%** | **98.64%** | **98.64%** | 5.9 |
-| spellman (single) | 30/30 | **97.52%** | **97.52%** | **98.64%** | **98.64%** | 11.2 |
-| whichlang 0.1 | 10/30 | 30.97% | 89.74% | 32.28% | 99.67% | **1.6** |
-| lingua 1.8 (high) | 17/30 | 43.15% | 91.82% | 68.55% | 97.69% | 289 |
-| lingua 1.8 (low) | 17/30 | 40.88% | 86.97% | 65.38% | 93.17% | 336 |
+| spellman (bulk) | 30/30 | **98.62%** | **98.62%** | **99.01%** | **99.01%** | 7.2 |
+| spellman (single) | 30/30 | **98.62%** | **98.62%** | **99.01%** | **99.01%** | 15.8 |
+| whichlang 0.1 | 10/30 | 27.21% | 90.15% | 32.28% | 99.67% | **1.0** |
+| lingua 1.8 (high) | 17/30 | 33.01% | 90.26% | 68.55% | 97.69% | 206 |
+| lingua 1.8 (low) | 17/30 | 31.20% | 85.31% | 65.38% | 93.17% | 291 |
 
-(368,507 / 37,051 rows; Apple M1 Pro; spellman k=1024 under BEAM=16;
-µs/sample from the held-out file in this harness — the CLI eval path on
-the same data reads 4.9 µs/sample. "all rows" counts gold languages
-outside a tool's inventory as errors — what a 30-class Cyrillic workload
-actually sees. whichlang/lingua cells were measured on the v11c-era
-split; rerun the quoted command to refresh them.)
+(719,255 / 37,051 rows, v14 same-split; AMD Ryzen 9 7950X3D; spellman
+k=1024 under BEAM=16; µs/sample from the held-out file in this harness —
+its rows are longer than Tatoeba's, where the same path reads
+3.5 µs/sample. "all rows" counts gold languages outside a tool's
+inventory as errors — what a 30-class Cyrillic workload actually sees.)
 
 **Accuracy by text length** — supported-subset accuracy per char-length
 bucket (the buckets `assess` uses; for spellman the subset is all rows):
 
 | bucket | held-out mix (n) | spellman | whichlang | lingua high |
 |---|---|---|---|---|
-| ≤20 chars | 33,561 | **89.57%** | 88.5%§ | 82.0%§ |
-| 21–100 | 153,496 | **97.51%** | 86.7%§ | 91.4%§ |
-| >100 | 181,450 | **98.99%** | 96.7%§ | 98.1%§ |
+| ≤20 chars | 60,095 | **93.79%** | 84.2% | 76.6% |
+| 21–100 | 272,416 | **98.52%** | 87.8% | 91.5% |
+| >100 | 386,744 | **99.45%** | 97.0% | 97.8% |
 
 | bucket | Tatoeba (n) | spellman | whichlang | lingua high |
 |---|---|---|---|---|
-| ≤20 chars | 1,567 | 96.62% | **97.5%** | 92.8% |
-| 21–100 | 34,674 | 98.70% | **99.7%** | 97.8% |
+| ≤20 chars | 1,567 | **97.77%** | 97.5% | 92.8% |
+| 21–100 | 34,674 | 99.05% | **99.7%** | 97.8% |
 | >100 | 810 | 99.88% | 99.5% | **100.0%** |
 
 (The held-out short bucket is large because the verified short-utterance
@@ -140,27 +137,27 @@ What the numbers say:
 - **Coverage dominates a Cyrillic workload.** whichlang knows one
   Cyrillic language of our 21 (rus); lingua knows 8. For the other
   languages of the region their answer is structurally wrong, which is
-  the 14–68% all-rows column.
+  the 27–69% all-rows column.
 - **Short text is lingua's advertised strength — and spellman wins it**:
-  on ≤20-char rows spellman leads lingua high-accuracy by 4–8pp on both
-  referees (96.6 vs 92.8 Tatoeba, 89.6 vs 82.0§ held-out), and lingua's
+  on ≤20-char rows spellman leads lingua high-accuracy by 5–17pp on both
+  referees (97.8 vs 92.8 Tatoeba, 93.8 vs 76.6 held-out), and lingua's
   low-accuracy mode collapses further. Mid-length is spellman's biggest
-  gap over lingua (97.5 vs 91.4§ held-out); at >100 chars everyone
+  gap over lingua (98.5 vs 91.5 held-out); at >100 chars everyone
   converges to 98–100% and the differences are coverage, not quality.
 - **On the languages they share with us, spellman wins the close pairs**
-  (held-out, full file, v11c-era split§): ukr 97.6% vs lingua 87.8, mkd
-  98.4% vs 89.2, srp 98.2% vs 97.0, kaz 98.7% vs 96.1, bul 98.0% vs
-  95.8, eng 97.7% vs 96.0, bel at parity (98.8 vs 99.0) — every shared
+  (held-out, full 719k file, same split): ukr 95.7% vs lingua 86.1, mkd
+  97.4% vs 84.2, srp 97.7% vs 96.9, kaz 98.9% vs 94.3, bul 96.7% vs
+  94.6, eng 97.4% vs 91.2, bel at parity (98.5 vs 99.0) — every shared
   language is at parity or ahead, with the wild-heavy classes widest.
 - **whichlang's 98.0% on Russian is real — and the trade is visible:**
   its 16-class world contains no ukr/bel/kaz to confuse with Russian.
-  spellman's rus (93.9%§; 84.5 on v12's short-wild-heavier split) bleeds
+  spellman's rus (90.3% on the wild-heavy v14 719k split) bleeds
   into those close classes — and into the small languages whose real wild
   data now competes — which is precisely the capacity that makes the
   other 20 Cyrillic columns work.
 - **Latency**: whichlang is the fastest per document (tiny 16-class
-  model) at ~3.5× spellman bulk; lingua high-accuracy is ~64× slower
-  than spellman bulk (325 vs 5.1 µs/sample, BEAM=16).
+  model) at ~7× spellman bulk; lingua high-accuracy is ~29× slower
+  than spellman bulk (206 vs 7.2 µs/sample, BEAM=16).
 
 Per-language on the held-out mix (v14, 719k rows): tgk/mhr/oss/deu/chv/
 sah/kpv/tat F1 1.00, uzn/kir/udm/bak/kaz/mon/tyv/srp/bel 0.99 — the
@@ -168,13 +165,18 @@ residual confusions are the genuinely hard ones (rus F1 0.85 on the
 short-wild-heavy slice, fra 0.94, spa 0.95, ukr 0.96, por/bul 0.97,
 eng/mkd 0.98; rus-attraction on short low-resource texts).
 
-Performance (fp16 svod JIT plans, BEAM=16, k=1024, Tatoeba eval —
+Performance (svod JIT plans, BEAM=16, k=1024, Tatoeba eval —
 37,051 documents):
 
-| hardware | bulk | single document |
-|---|---|---|
-| Apple M1 Pro | 3.6 µs/sample (~280k docs/s) | 3.8 µs/doc |
-| AMD AI 395 Max | 1.2 µs/sample (~830k docs/s) | 13.0 µs/doc |
+| hardware | model | bulk | single document |
+|---|---|---|---|
+| AMD Ryzen 9 7950X3D | v14 (2^18) | 3.5 µs/sample (~285k docs/s) | 7.5 µs/doc |
+| Apple M1 Pro | v12 (2^17) | 3.6 µs/sample (~280k docs/s) | 3.8 µs/doc |
+| AMD AI 395 Max | v12 (2^17) | 1.2 µs/sample (~830k docs/s) | 13.0 µs/doc |
+
+The 2^18 table costs nothing measurable on the 7950X3D: the v12-era 2^17
+model times identically (3.5 µs) on the same box, and the int8-row root
+and f16 store time identically too (the loader dequantizes once).
 
 Scoring is pure table lookups after the algebraic fold `P = E·W` — no
 embedding gathers, no matmul. fmix32 bucket spread on real n-grams:
