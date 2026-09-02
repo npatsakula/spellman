@@ -280,19 +280,37 @@ Shape specialization is the core trick:
 
 - **K (tokens per document) is a compile-time constant baked into the
   plan** — never a symbolic variable — so the scheduler specializes every
-  kernel for the fixed sequence length. Documents are truncated/zero-padded
-  to K; padding gathers the all-zero row, so the sum is unaffected.
-- **Only the batch dimension is symbolic**, rebound per call with
-  `execute_with_vars(&[("b", n)])`. `SingleDetector` additionally bakes
-  B = 1 (`with_b_fixed(1)`) for fully static single-document kernels.
+  kernel for the fixed sequence length. Rows are zero-padded to K;
+  padding gathers the all-zero row, so the sum is unaffected. Rows longer
+  than K are chunk-accumulated over several executes (the folded score is
+  additive over feature ids), so nothing is truncated.
+- **The batch dimension is a compile-time constant too**
+  (`with_b_fixed(max_batch)`; `SingleDetector` is the B = 1 case). It
+  used to be symbolic, rebound per call — and that capped the kernel at
+  6 threads: svod threads a loop axis only when its range is a constant
+  that a thread count divides, so the only splittable axis was the 30-way
+  class axis (30 = 6 × 5). With B = 512 the batch axis splits 32-way and
+  the gather scales with the machine (Tatoeba 3.5 → 1.9 µs/sample under
+  BEAM on the 7950X3D; 11 → 2.0 µs on the heuristic schedule). The price
+  is that a partial batch pays for its padded rows, so bulk callers fill
+  their batches and one-shot callers use `SingleDetector`.
+- **A small plan ladder over K (64 / 256 / top rung), chosen per call**
+  by the longest row: the kernel does B × K work whatever the rows hold,
+  so a batch of single words on a K=1024 plan was ~98% padding. The
+  ladder's plans share one realized ±P table. Fragment-level scoring
+  (the `assess` word/pair/triple ladder) went from 10.8 to 0.8 µs/row.
 - **Mean-pooling, bias, softmax, argmax run host-side at read-out** (30
   floats per document): featurization already knows each document's exact
   token count, so the graph needs no count computation. The single f32
   conversion happens there, via a hand-rolled fp16→f32 widening.
 
-**Zero-copy featurization:** the plan's input buffer is host-mapped;
-rayon-parallel feature extraction writes signed bucket indices straight
-into the buffer through a typed view — no staging allocation, no copy.
+**Featurization:** one indexed rayon task per row hashes the full token
+stream (the exact count picks the rung and drives the mean-pool), then an
+indexed parallel copy lands the rows in the plan's host-mapped input
+buffer through a typed view. The earlier `par_bridge` streaming write
+was replaced on purpose: a bridged iterator is a mutex plus a
+`yield_now` spin per item, and 512 tiny rows over 32 workers showed up
+as ~1,300 `sched_yield` calls per batch.
 
 Measured on the shipped model (Apple Silicon, k=1024, full held-out
 mix): **4.6 µs/sample bulk** (~215k docs/s) at `BEAM=16` and **3.7 µs

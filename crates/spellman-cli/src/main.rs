@@ -155,11 +155,11 @@ fn detect(
     let mut stdin = io::stdin().lock();
     stdin.read_to_string(&mut input)?;
 
-    let mut detector = BulkDetector::load(model_dir, plan.k, plan.batch())?;
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
     if lines {
+        let mut detector = BulkDetector::load(model_dir, plan.k, plan.batch())?;
         let docs: Vec<&str> = input.lines().collect();
         for chunk in docs.chunks(plan.batch()) {
             for d in detector.detect_batch(chunk)? {
@@ -167,9 +167,11 @@ fn detect(
             }
         }
     } else {
-        let text = input.trim();
-        let d = &detector.detect_batch(&[text])?[0];
-        write_detection(&mut out, d, json)?;
+        // One document: the B = 1 plan. The bulk plan's batch is compiled
+        // in, so a single row there would pay for a whole padded batch.
+        let mut detector = SingleDetector::load(model_dir, plan.k)?;
+        let d = detector.detect(input.trim())?;
+        write_detection(&mut out, &d, json)?;
     }
     out.flush()?;
     Ok(())
@@ -277,15 +279,26 @@ fn bench(
         );
     }
 
+    // Steady state on a full compiled batch (the batch size is baked into
+    // the plan, so a partial batch would measure padding): probes cycled
+    // to `batch` rows, reported per sample.
+    let full: Vec<&str> = PROBES.iter().copied().cycle().take(batch).collect();
     let mut times = Vec::with_capacity(repeats);
     for _ in 0..repeats {
         let t = Instant::now();
-        bulk.detect_batch(&PROBES)?;
+        bulk.detect_batch(&full)?;
         times.push(t.elapsed());
     }
     times.sort();
-    println!("bulk steady state, {repeats} batches of {}:", PROBES.len());
-    println!("  min {:?}  median {:?}", times[0], times[times.len() / 2]);
+    let per = |d: std::time::Duration| d.as_nanos() as f64 / batch as f64 / 1000.0;
+    println!("bulk steady state, {repeats} batches of {batch}:");
+    println!(
+        "  min {:?} ({:.2} µs/sample)  median {:?} ({:.2} µs/sample)",
+        times[0],
+        per(times[0]),
+        times[times.len() / 2],
+        per(times[times.len() / 2])
+    );
 
     if single {
         let mut sd = SingleDetector::load(model_dir, plan.k)?;

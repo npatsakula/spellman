@@ -474,6 +474,34 @@ pub fn fill_signed_indices(
     out
 }
 
+/// Append every signed bucket token of `text` to `out` (no truncation):
+/// the [`fill_signed_indices`] emission loop over a growable row, for
+/// callers that need the exact token count before choosing a plan K and
+/// that chunk long rows themselves.
+pub fn push_signed_indices(
+    text: &str,
+    cfg: &FeatureConfig,
+    hasher: &crate::hash::FeatureHasher,
+    log2_d: u32,
+    out: &mut Vec<i32>,
+) {
+    let mut buf = [0u64; 8];
+    let mut nbuf = 0usize;
+    let mut block = [0i32; 8];
+    for_each_key(text, cfg, |key| {
+        buf[nbuf] = key;
+        nbuf += 1;
+        if nbuf == 8 {
+            nbuf = 0;
+            hasher.signed_index_block(&buf, log2_d, &mut block);
+            out.extend_from_slice(&block);
+        }
+    });
+    for &key in &buf[..nbuf] {
+        out.push(hasher.signed_index(key, log2_d));
+    }
+}
+
 /// Flush one full 8-key block through [`FeatureHasher::signed_index_block`],
 /// scalar with k-truncation when the row tail is shorter than a block.
 /// Outlined (`inline(never)`) on purpose — it runs once per eight keys, and

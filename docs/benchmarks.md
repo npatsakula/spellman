@@ -132,16 +132,30 @@ eng/mkd 0.98; rus-attraction on short low-resource texts).
 
 ## Throughput
 
-svod JIT plans, BEAM=16, k=1024, Tatoeba eval — 37,051 documents:
+svod JIT plans, BEAM=16, k=1024 (top rung), batch 512, Tatoeba eval —
+37,051 documents:
 
 | hardware | model | bulk | single document |
 |---|---|---|---|
-| AMD Ryzen 9 7950X3D | v14 (2^18) | 3.5 µs/sample (~285k docs/s) | 7.5 µs/doc |
-| Apple M1 Pro | v12 (2^17) | 3.6 µs/sample (~280k docs/s) | 3.8 µs/doc |
-| AMD AI 395 Max | v12 (2^17) | 1.2 µs/sample (~830k docs/s) | 13.0 µs/doc |
+| AMD Ryzen 9 7950X3D | v14 (2^18) | 1.9 µs/sample (~525k docs/s) | 4.3 µs/doc |
+| Apple M1 Pro (before the batch/K rework) | v12 (2^17) | 3.6 µs/sample (~280k docs/s) | 3.8 µs/doc |
+| AMD AI 395 Max (before the batch/K rework) | v12 (2^17) | 1.2 µs/sample (~830k docs/s) | 13.0 µs/doc |
 
-Without the BEAM scheduler the default plan runs 5.1 µs/sample on the
-same hardware. Since svod 0.1.0-alpha.5 the beam search runs in a
+Same box, same settings, other inputs: the 719k-row held-out test split
+(longer, mixed-register texts) runs at 2.9 µs/sample and a 1M-row file
+of single words at 0.8 µs/sample — the per-call plan ladder scores short
+rows on a K=64 plan instead of padding them to 1024. The `detect_md`
+example sweeps a 6.2 MB novel at ~540k sentences/s (88 MB/s) with one
+replica per physical core (`--mode replicas --threads 16`); a single
+detector driven from the main thread reaches ~420k/s.
+
+Before the rework (symbolic batch axis) the same Tatoeba run took
+3.5 µs/sample with BEAM and 11 µs without: svod threads a kernel over a
+loop axis only when it is a constant a thread count divides, so with a
+symbolic batch the only splittable axis was the 30-way class axis — a
+6-thread ceiling on a 32-thread machine, visible as idle cores in `htop`.
+A batch compiled at 512 splits 32-way. Without the BEAM scheduler the
+default plan now runs 2.0 µs/sample. Since svod 0.1.0-alpha.5 the beam search runs in a
 separate helper process: `cargo install svod-tensor --bin
 svod-beam-worker` and point `SVOD_BEAM_WORKER` at the installed binary,
 otherwise `BEAM=16` fails at prepare time with "BEAM helper is

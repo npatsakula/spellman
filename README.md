@@ -12,8 +12,9 @@ Russian/Ukrainian or Bulgarian/Macedonian.
 - **~99% accuracy** on out-of-domain sentences, **~95%** on real
   ≤19-character utterances — the regime where general detectors drop to
   70–85% ([full benchmarks](docs/benchmarks.md))
-- **~3.5 µs per document** on a desktop CPU (~285k docs/s in bulk) —
-  two orders of magnitude faster than fastText-class models
+- **~2 µs per sentence** on a desktop CPU (~500k docs/s in bulk, under
+  1 µs on single words) — two orders of magnitude faster than
+  fastText-class models
 - **8.9 MB model**, pure Rust, no runtime dependencies beyond the crate
 - MIT licensed, and the training data is commercially clean: no
   non-commercial upstream survives the license audit
@@ -94,14 +95,18 @@ fastText-class models and ~29× faster than lingua.
 
 ## Speed
 
-| hardware | bulk | single document |
-|---|---|---|
-| AMD Ryzen 9 7950X3D | 3.5 µs/sample (~285k docs/s) | 7.5 µs/doc |
-| Apple M1 Pro (v12-era) | 3.6 µs/sample (~280k docs/s) | 3.8 µs/doc |
+| hardware | bulk, sentences | bulk, single words | single document |
+|---|---|---|---|
+| AMD Ryzen 9 7950X3D | 1.9 µs/sample (~525k docs/s) | 0.8 µs/sample | 4.3 µs/doc |
+| Apple M1 Pro (v12-era, before the batch/K rework) | 3.6 µs/sample | — | 3.8 µs/doc |
 
 Inference is pure table lookups: the trained network folds algebraically
 into a single quantized lookup table (`P = E·W`), executed by the [svod]
-JIT with a beam-searched schedule. No matmul, no embedding gathers.
+JIT with a beam-searched schedule. No matmul, no embedding gathers. The
+bulk detector compiles a fixed batch (so the kernel threads across all
+cores) and keeps a small ladder of plans over the token budget, picking
+the smallest one that fits each batch's longest row — a batch of single
+words never pays for a 1024-token plan.
 
 The beam-searched numbers above need svod's out-of-process search
 helper (the default heuristic schedule runs ~5 µs/sample without it):

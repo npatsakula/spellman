@@ -1,15 +1,23 @@
 //! Bulk-detection sweep over a markdown book: end-to-end throughput and the
 //! language histogram of every sentence.
 //!
-//! One plan is prepared up front on the main thread (planning + kernel
-//! compilation + weight upload happen once), then forked per rayon worker
-//! with `BulkDetector::replicate` — svod's plan replication gives each
-//! worker its own input/output buffers over the *shared* sealed weight
-//! storage, so a replica costs buffer allocation only. Workers get their
-//! replica through rayon's `map_init` (one per worker job, no mutex, no
-//! plan pool choreography); the optimizer strategy is passed
-//! programmatically via `PrepareConfig` (beam vs heuristic), never through
-//! the BEAM env var.
+//! One plan ladder is prepared up front on the main thread (planning +
+//! kernel compilation + weight upload happen once). Two ways to drive it
+//! (`--mode`):
+//!
+//! - `single` (default): one detector on the main thread. Featurization
+//!   fans out over the rayon pool and svod threads each kernel over the
+//!   pool too — scales with the box, no coordination in this file.
+//! - `replicas`: `BulkDetector::replicate` forks a replica per rayon
+//!   worker through `map_init` (fresh buffers over the *shared* sealed
+//!   weights; a fork costs a few ms). svod runs a kernel single-threaded
+//!   when called from inside a rayon worker, so this is the
+//!   one-plan-per-core shape: fastest with `--threads` = physical cores
+//!   (7950X3D, BEAM 16: ~540k sentences/s vs ~420k for `single`), and
+//!   slower than `single` when oversubscribed onto SMT threads.
+//!
+//! The optimizer strategy is passed programmatically via `PrepareConfig`
+//! (beam vs heuristic), never through the BEAM env var.
 //! Sentences are split from the markdown with our own rule-based
 //! splitter (`spellman_detector::sent` — terminator runs, «closers»,
 //! initials, decimals, dialogue-dash rules), with heading lines dropped
@@ -23,7 +31,7 @@
 //! `--beam 0` uses the heuristic schedule and needs nothing):
 //!   cargo run --release --example detect_md -- \
 //!       --model ../../model --md ../../tests/voyna-i-mir.md \
-//!       --threads 16 --batch 512 --k 1024 --beam 16
+//!       --threads 16 --batch 512 --k 1024 --beam 16 --mode replicas
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -62,6 +70,19 @@ struct Args {
     /// Drop sentences shorter than this many chars.
     #[arg(long, default_value_t = 20)]
     min_chars: usize,
+    /// `single`: one detector on the calling thread — svod threads each
+    /// kernel across the rayon pool (the default; scales with the box).
+    /// `replicas`: one replica per rayon worker via `map_init` — svod runs
+    /// a kernel single-threaded inside a rayon worker, so this is the
+    /// one-plan-per-core shape.
+    #[arg(long, default_value = "single")]
+    mode: Mode,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum Mode {
+    Single,
+    Replicas,
 }
 
 /// Split markdown text into sentences: heading lines are skipped, each
@@ -169,28 +190,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .num_threads(args.threads)
         .build()?;
 
-    // `map_init` is rayon's thread-local slot: each worker forks its own
-    // replica from the shared base and reuses it across the shards it
-    // steals — no mutex, no plan pool.
     let t = Instant::now();
-    let tally = rp.install(|| {
-        sentences
-            .par_chunks(shard)
-            .map_init(
-                || base.replicate().expect("replicate plan"),
-                |det, shard| {
-                    let mut tally = Tally::default();
-                    for chunk in shard.chunks(args.batch) {
-                        let texts: Vec<&str> = chunk.iter().map(String::as_str).collect();
-                        for d in det.detect_batch(&texts).expect("detect_batch") {
-                            tally.record(&d);
+    let tally = match args.mode {
+        // One detector, driven from this (non-rayon) thread: featurization
+        // fans out over the pool and svod threads the kernel over it too.
+        Mode::Single => {
+            let mut det = base;
+            let mut tally = Tally::default();
+            rp.install(|| ()); // pool exists; work is dispatched from here
+            for chunk in sentences.chunks(args.batch) {
+                let texts: Vec<&str> = chunk.iter().map(String::as_str).collect();
+                for d in det.detect_batch(&texts).expect("detect_batch") {
+                    tally.record(&d);
+                }
+            }
+            tally
+        }
+        // `map_init` is rayon's thread-local slot: each worker forks its
+        // own replica from the shared base and reuses it across the shards
+        // it steals — no mutex, no plan pool.
+        Mode::Replicas => rp.install(|| {
+            sentences
+                .par_chunks(shard)
+                .map_init(
+                    || base.replicate().expect("replicate plan"),
+                    |det, shard| {
+                        let mut tally = Tally::default();
+                        for chunk in shard.chunks(args.batch) {
+                            let texts: Vec<&str> = chunk.iter().map(String::as_str).collect();
+                            for d in det.detect_batch(&texts).expect("detect_batch") {
+                                tally.record(&d);
+                            }
                         }
-                    }
-                    tally
-                },
-            )
-            .reduce(Tally::default, Tally::merge)
-    });
+                        tally
+                    },
+                )
+                .reduce(Tally::default, Tally::merge)
+        }),
+    };
     let dt = t.elapsed();
 
     let total: u64 = tally.langs.values().sum();

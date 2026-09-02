@@ -12,10 +12,12 @@
 //! featurization already knows each document's exact token count, so the
 //! graph needs no count computation at all.
 //!
-//! `K` (tokens per document, truncated/zero-padded) is baked into the plan as
-//! a compile-time constant so the scheduler can specialize every kernel for
-//! the fixed sequence length; only the batch dim stays symbolic and is
-//! rebound per call with `execute_with_vars(&[("b", n)])`.
+//! `K` (tokens per document, zero-padded) and the batch size are both baked
+//! into a plan as compile-time constants: the scheduler specializes every
+//! kernel for the fixed shape, and a constant batch axis is what lets svod
+//! thread the gather across cores (see [`BulkDetector`]). `BulkDetector`
+//! keeps a small ladder of plans over `K` and picks one per call by the
+//! longest row; [`SingleDetector`] is the `B = 1` special case.
 //!
 //! Signed hashing is folded into the table layout: the gather table is
 //! `[2*(D+1), C]` with rows `0..=D` equal to `P` and rows `D+1..=2D+1` equal
@@ -152,35 +154,65 @@ pub enum BulkError {
     BatchTooLarge { len: usize, max: usize },
 }
 
-/// Batched detector over a compiled svod plan.
+/// Per-call plan ladder: every call scores all of its rows on the smallest
+/// plan whose `K` covers the longest row (the caller's `k` is the top rung;
+/// rungs at or above it are dropped). The gather kernel does `B × K` work
+/// per execute whatever the rows hold, so a batch of single words on a
+/// K=1024 plan is ~98% padding — the ladder cuts that without changing a
+/// result (padding gathers the all-zero row). Rows longer than the top
+/// rung are chunk-accumulated exactly as before.
+const K_LADDER: [usize; 2] = [64, 256];
+
+/// One prepared plan of the ladder.
+struct Plan {
+    jit: SpellmanJit,
+    k: usize,
+    /// Rows `[0, dirty_rows)` of the input buffer hold indices from an
+    /// earlier call; everything past them is already the pad index. Each
+    /// execute re-pads only that window instead of the whole buffer.
+    dirty_rows: usize,
+}
+
+/// Batched detector over compiled svod plans.
 ///
-/// Documents are truncated/padded to `k` bucket tokens on the CPU (cheap
-/// sequential byte work), then scored in one fused kernel launch per batch.
+/// Documents are featurized on the CPU (cheap sequential byte work, one
+/// rayon task per row), then scored in one fused kernel launch per batch.
 /// Script-unique languages (jpn/cmn/hin/ara) are routed on the CPU and never
 /// reach the plan.
+///
+/// The batch dimension is **fixed at `max_batch` at compile time**
+/// (`with_b_fixed`), not symbolic: svod threads a kernel over a loop axis
+/// only when that axis is a constant a thread count divides, and with a
+/// symbolic batch the only splittable axis was the 30-way class axis (a
+/// 6-thread ceiling, measured). A constant batch of 512 splits 32-way and
+/// the kernel scales with the box; a partial batch pays for the padded rows
+/// (all-zero gathers), which is why bulk callers should fill their batches.
 ///
 /// Device placement follows svod's loading convention: weights live on the
 /// default device at load time, so call `svod_tensor::set_default_device`
 /// before constructing if the plan should run on a GPU.
 pub struct BulkDetector {
-    jit: SpellmanJit,
+    /// Ascending K; the last rung is the caller's `k`.
+    plans: Vec<Plan>,
     model: Model,
-    k: usize,
     max_batch: usize,
 }
 
 impl BulkDetector {
-    /// Load from a model directory and compile the plan. `k` is the
-    /// per-document token budget (try 1024+ for paragraph text); `max_batch`
-    /// sizes the input buffer and the symbolic bound on `b`. The state dict
-    /// is loaded once and feeds both the host-side feature config and the
-    /// device-resident fp16 weight tensors.
+    /// Load from a model directory and compile the plan ladder. `k` is the
+    /// per-document token budget of the top rung (try 1024+ for paragraph
+    /// text; longer documents are chunk-accumulated, never truncated);
+    /// `max_batch` is the compiled batch size — `detect_batch` accepts up
+    /// to that many rows per call, and a full batch is the efficient one.
+    /// The state dict is loaded once and feeds both the host-side feature
+    /// config and the device-resident fp16 weight table, which the ladder's
+    /// plans share.
     ///
-    /// The input buffer is host-mapped (not device-local): featurization
-    /// writes bucket indices directly into the plan's buffer through a
-    /// zero-copy typed view, skipping a staging allocation and a copy.
-    /// AMD's host-visible VRAM mapping supports the same path; a CUDA
-    /// device-local buffer would need `copyin` staging instead.
+    /// The input buffers are host-mapped (not device-local): featurization
+    /// results are copied straight into the plan's buffer through a
+    /// zero-copy typed view. AMD's host-visible VRAM mapping supports the
+    /// same path; a CUDA device-local buffer would need `copyin` staging
+    /// instead.
     pub fn load(
         dir: &std::path::Path,
         k: usize,
@@ -204,14 +236,39 @@ impl BulkDetector {
         let metadata = crate::model::read_metadata(dir).context(ModelSnafu)?;
         let sd = svod_model::state::load_safetensors_dir(dir).context(StateSnafu)?;
         let model = Model::from_state_dict(&sd, metadata).context(ModelSnafu)?;
+        let max_batch = max_batch.max(1);
+        let k = k.max(1);
+        // One realized ±P table shared by every rung: realizing it here
+        // (rather than letting each plan fold its own copy) keeps the
+        // ladder at one table's worth of memory; the plans gather from the
+        // shared buffer.
         let inner = SpellmanModel::from_table(&model.table, NUM_LANGS).context(TensorSnafu)?;
-        let mut jit = SpellmanJit::new(inner);
-        jit.prepare_with_config(InputSpec::i32(&[max_batch, k]), config)
-            .context(JitSnafu)?;
+        let mut table = inner.table;
+        table.realize().context(TensorSnafu)?;
+        let rungs = K_LADDER
+            .iter()
+            .copied()
+            .filter(|&rung| rung < k)
+            .chain(std::iter::once(k));
+        let mut plans = Vec::new();
+        for rung in rungs {
+            let mut jit = SpellmanJit::new(SpellmanModel {
+                table: table.clone(),
+            })
+            .with_b_fixed(max_batch);
+            jit.prepare_with_config(InputSpec::i32(&[max_batch, rung]), config)
+                .context(JitSnafu)?;
+            plans.push(Plan {
+                jit,
+                k: rung,
+                // Fresh buffer contents are unspecified: treat every row as
+                // dirty so the first execute pads the whole buffer.
+                dirty_rows: max_batch,
+            });
+        }
         Ok(BulkDetector {
-            jit,
+            plans,
             model,
-            k,
             max_batch,
         })
     }
@@ -248,20 +305,42 @@ impl BulkDetector {
         Self::load(&dir, k, max_batch)
     }
 
-    /// Fork this detector for another worker thread: the execution plan is
-    /// replicated (fresh input/output buffers, shared sealed weight
-    /// storage), so the replica pays buffer allocation only — no planning,
-    /// no kernel compilation, no second weight upload. Host-side state
-    /// (feature config, bias, θ) is cloned. The canonical parallel pattern
-    /// is one `replicate()` per rayon worker via `map_init`; see the
-    /// `detect_md` example.
+    /// Fork this detector for another worker thread: every plan of the
+    /// ladder is replicated (fresh input/output buffers over the shared
+    /// sealed weight storage), so the replica pays buffer allocation only —
+    /// no planning, no kernel compilation, no second weight upload.
+    /// Host-side state (feature config, bias, θ) is cloned.
+    ///
+    /// Note that svod runs a kernel single-threaded when `detect_batch` is
+    /// called from inside a rayon worker (its nested-parallelism policy),
+    /// so replicas suit one-replica-per-core designs; a single detector
+    /// driven from a non-rayon thread already threads its kernel across
+    /// the machine.
     pub fn replicate(&self) -> Result<BulkDetector, BulkError> {
+        let mut plans = Vec::with_capacity(self.plans.len());
+        for plan in &self.plans {
+            plans.push(Plan {
+                jit: plan.jit.replicate().context(JitSnafu)?,
+                k: plan.k,
+                dirty_rows: self.max_batch,
+            });
+        }
         Ok(BulkDetector {
-            jit: self.jit.replicate().context(JitSnafu)?,
+            plans,
             model: self.model.clone(),
-            k: self.k,
             max_batch: self.max_batch,
         })
+    }
+
+    /// Compiled batch size: the most rows one `detect_batch` call accepts.
+    pub fn max_batch(&self) -> usize {
+        self.max_batch
+    }
+
+    /// Token budget of the top rung: rows with more tokens are
+    /// chunk-accumulated over several executes.
+    pub fn k(&self) -> usize {
+        self.plans.last().map(|p| p.k).unwrap_or(0)
     }
 
     pub fn detect_batch(&mut self, texts: &[&str]) -> Result<Vec<Detection>, BulkError> {
@@ -271,34 +350,26 @@ impl BulkDetector {
                 max: self.max_batch,
             });
         }
-        let d = self.model.num_buckets();
-        let mut routed: Vec<(usize, ())> = Vec::new(); // model-scored slots
-        // Texts for the model-scored slots; None for slots that were routed
-        // on the CPU (direct script / no script).
-        let mut row_texts: Vec<Option<&str>> = Vec::with_capacity(texts.len());
+        let pad = self.model.num_buckets() as i32;
 
+        // CPU routing: script-unique languages and letterless text never
+        // reach a plan. `rows` are the (slot, text) pairs the model scores.
         let mut results: Vec<Detection> = Vec::with_capacity(texts.len());
+        let mut rows: Vec<(usize, &str)> = Vec::new();
         for (slot, text) in texts.iter().enumerate() {
             match crate::route::route(text) {
-                crate::route::Route::Direct(lang) => {
-                    results.push(Detection {
-                        lang: Some(lang),
-                        confidence: 1.0,
-                        is_uncertain: false,
-                    });
-                    row_texts.push(None);
-                }
-                crate::route::Route::Unknown => {
-                    results.push(Detection {
-                        lang: None,
-                        confidence: 0.0,
-                        is_uncertain: true,
-                    });
-                    row_texts.push(None);
-                }
+                crate::route::Route::Direct(lang) => results.push(Detection {
+                    lang: Some(lang),
+                    confidence: 1.0,
+                    is_uncertain: false,
+                }),
+                crate::route::Route::Unknown => results.push(Detection {
+                    lang: None,
+                    confidence: 0.0,
+                    is_uncertain: true,
+                }),
                 crate::route::Route::Group(_) => {
-                    routed.push((slot, ()));
-                    row_texts.push(Some(text));
+                    rows.push((slot, text));
                     // Placeholder; overwritten after execution.
                     results.push(Detection {
                         lang: None,
@@ -308,159 +379,112 @@ impl BulkDetector {
                 }
             }
         }
-
-        if routed.is_empty() {
+        if rows.is_empty() {
             return Ok(results);
         }
 
-        // Zero-copy: write signed bucket indices straight into the plan's
-        // host-mapped input buffer. Feature extraction is the bulk-path
-        // bottleneck (sequential byte work); it parallelizes cleanly across
-        // batch rows. Each task also records the document's token count for
-        // the host-side mean-pool at read-out.
+        // Featurize every row in full (no truncation) — one indexed rayon
+        // task per row, so the pool splits the batch without the mutex +
+        // yield spin of a bridged iterator. The exact token counts pick the
+        // plan rung and drive the host-side mean-pool.
         use rayon::prelude::*;
-        use std::sync::atomic::{AtomicU32, Ordering};
-        let jit = &mut self.jit;
         let model = &self.model;
-        let k = self.k;
-        let mut view = jit
-            .idx_mut()
-            .context(JitSnafu)?
-            .as_array_mut::<i32>()
-            .context(DeviceSnafu)?;
-        let flat: &mut [i32] = view.as_slice_mut().ok_or_else(|| BulkError::View {
-            message: "input buffer not contiguous".into(),
-        })?;
-        let counts: Vec<AtomicU32> = (0..flat.len() / k).map(|_| AtomicU32::new(0)).collect();
-        flat.chunks_mut(k)
-            .zip(&row_texts)
-            .zip(&counts)
-            .par_bridge()
-            .for_each(|((row, text), count)| {
-                let Some(text) = text else { return };
-                // Stream token indices into the row head, then pad the tail.
-                let pad = d as i32;
-                let out = crate::features::fill_signed_indices(
+        let ids: Vec<Vec<i32>> = rows
+            .par_iter()
+            .map(|(_, text)| {
+                let mut out = Vec::with_capacity(text.len() / 2 + 8);
+                crate::features::push_signed_indices(
                     text,
                     &model.features,
                     &model.hasher,
                     model.log2_d,
-                    k,
-                    row,
+                    &mut out,
                 );
-                for dst in &mut row[out..] {
-                    *dst = pad;
-                }
-                count.store(out as u32, Ordering::Relaxed);
-            });
-        let n = texts.len() as i64;
-        self.jit.execute_with_vars(&[("b", n)]).context(JitSnafu)?;
-
-        // Output buffer holds fp16 row-sums, sized for the variable's max
-        // bound; read only the active `b = n` rows. Mean-pool, bias, softmax,
-        // and argmax run host-side with the featurizer's exact counts.
-        let mut sums_f16 = vec![0u16; (n as usize) * NUM_LANGS];
-        self.jit
-            .output()
-            .context(JitSnafu)?
-            .copyout_prefix(bytemuck::cast_slice_mut(&mut sums_f16))
-            .context(DeviceSnafu)?;
-
-        for slot in routed.iter().map(|(slot, _)| *slot) {
-            let row = &sums_f16[slot * NUM_LANGS..][..NUM_LANGS];
-            results[slot] = logits_to_detection(
-                row,
-                counts[slot].load(Ordering::Relaxed),
-                &self.model.bias,
-                self.model.metadata.theta,
-            );
-        }
-
-        // Long documents: a row that filled to K may have tokens beyond
-        // the budget — the execute above scored exactly their first
-        // chunk. The folded score is additive over feature ids, so
-        // accumulating the remaining chunks' outputs gives the exact
-        // untruncated document score: no truncation, no first-K position
-        // bias (a French opening over a Russian body reads all the way
-        // down). Batches where nothing overflows pay one length check.
-        let model = &self.model;
-        let longs: Vec<(usize, Vec<i32>)> = routed
-            .iter()
-            .map(|(slot, _)| *slot)
-            .filter(|&slot| counts[slot].load(Ordering::Relaxed) == k as u32)
-            .collect::<Vec<_>>()
-            .into_par_iter()
-            .filter_map(|slot| {
-                let text = row_texts[slot]?;
-                let mut ids = Vec::with_capacity(text.len() / 2 + 8);
-                crate::features::for_each_key(text, &model.features, |key| {
-                    ids.push(model.hasher.signed_index(key, model.log2_d));
-                });
-                (ids.len() > k).then_some((slot, ids))
+                out
             })
             .collect();
 
-        if !longs.is_empty() {
-            let pad = d as i32;
-            // per-doc accumulators: first-chunk fp16 sums + total count
-            let mut acc: Vec<(usize, Vec<f32>, u32)> = longs
-                .iter()
-                .map(|(slot, ids)| {
-                    let first = &sums_f16[slot * NUM_LANGS..][..NUM_LANGS];
-                    (
-                        *slot,
-                        first.iter().map(|&s| f16_to_f32(s)).collect(),
-                        ids.len() as u32,
-                    )
-                })
-                .collect();
-            // the remaining chunks as a flat row stream, executed in
-            // max_batch-sized rounds
-            let mut rows: Vec<(usize, &[i32])> = Vec::new();
-            for (li, (_, ids)) in longs.iter().enumerate() {
-                for chunk in ids[k..].chunks(k) {
-                    rows.push((li, chunk));
-                }
+        // Smallest rung that holds the longest row; the top rung otherwise
+        // (its overflow is chunk-accumulated below).
+        let longest = ids.iter().map(Vec::len).max().unwrap_or(0);
+        let plan_idx = self
+            .plans
+            .iter()
+            .position(|p| p.k >= longest)
+            .unwrap_or(self.plans.len() - 1);
+        let plan = &mut self.plans[plan_idx];
+        let k = plan.k;
+
+        // Every (row, chunk) pair to score: the first chunk of each row in
+        // row order — one round for a batch nothing overflows — then the
+        // remaining chunks of the long rows. The folded score is additive
+        // over feature ids, so summing the per-chunk outputs gives the
+        // exact untruncated document score: no truncation, no first-K
+        // position bias (a French opening over a Russian body reads all
+        // the way down).
+        let mut chunks: Vec<(usize, usize)> = (0..ids.len()).map(|r| (r, 0)).collect();
+        for (r, row_ids) in ids.iter().enumerate() {
+            let mut start = k;
+            while start < row_ids.len() {
+                chunks.push((r, start));
+                start += k;
             }
-            for group in rows.chunks(self.max_batch) {
-                {
-                    let mut view = self
-                        .jit
-                        .idx_mut()
-                        .context(JitSnafu)?
-                        .as_array_mut::<i32>()
-                        .context(DeviceSnafu)?;
-                    let flat: &mut [i32] = view.as_slice_mut().ok_or_else(|| BulkError::View {
-                        message: "input buffer not contiguous".into(),
-                    })?;
-                    for (ri, (_, chunk)) in group.iter().enumerate() {
-                        let row = &mut flat[ri * k..][..k];
-                        row[..chunk.len()].copy_from_slice(chunk);
-                        for dst in &mut row[chunk.len()..] {
-                            *dst = pad;
-                        }
-                    }
-                }
-                self.jit
-                    .execute_with_vars(&[("b", group.len() as i64)])
-                    .context(JitSnafu)?;
-                let mut group_sums = vec![0u16; group.len() * NUM_LANGS];
-                self.jit
-                    .output()
+        }
+
+        let mut sums: Vec<[f32; NUM_LANGS]> = vec![[0.0; NUM_LANGS]; ids.len()];
+        let mut out_f16 = vec![0u16; self.max_batch * NUM_LANGS];
+        for group in chunks.chunks(self.max_batch) {
+            {
+                let mut view = plan
+                    .jit
+                    .idx_mut()
                     .context(JitSnafu)?
-                    .copyout_prefix(bytemuck::cast_slice_mut(&mut group_sums))
+                    .as_array_mut::<i32>()
                     .context(DeviceSnafu)?;
-                for (ri, (li, _)) in group.iter().enumerate() {
-                    let a = &mut acc[*li].1;
-                    for (x, &s) in a.iter_mut().zip(&group_sums[ri * NUM_LANGS..][..NUM_LANGS]) {
-                        *x += f16_to_f32(s);
-                    }
+                let flat: &mut [i32] = view.as_slice_mut().ok_or_else(|| BulkError::View {
+                    message: "input buffer not contiguous".into(),
+                })?;
+                // Zero-copy: chunk ids land straight in the host-mapped
+                // plan buffer, row tails padded; rows past this group that
+                // an earlier call wrote are re-padded.
+                flat[..group.len() * k]
+                    .par_chunks_mut(k)
+                    .zip(group.par_iter())
+                    .for_each(|(row, &(r, start))| {
+                        let src = &ids[r][start..(start + k).min(ids[r].len())];
+                        row[..src.len()].copy_from_slice(src);
+                        row[src.len()..].fill(pad);
+                    });
+                if plan.dirty_rows > group.len() {
+                    flat[group.len() * k..plan.dirty_rows * k].fill(pad);
+                }
+                plan.dirty_rows = group.len();
+            }
+            plan.jit.execute().context(JitSnafu)?;
+            // Output buffer holds fp16 row-sums for the full compiled
+            // batch; read only the active rows.
+            let active = &mut out_f16[..group.len() * NUM_LANGS];
+            plan.jit
+                .output()
+                .context(JitSnafu)?
+                .copyout_prefix(bytemuck::cast_slice_mut(active))
+                .context(DeviceSnafu)?;
+            for (i, &(r, _)) in group.iter().enumerate() {
+                let acc = &mut sums[r];
+                for (x, &s) in acc.iter_mut().zip(&active[i * NUM_LANGS..][..NUM_LANGS]) {
+                    *x += f16_to_f32(s);
                 }
             }
-            for (slot, sums, total) in acc {
-                results[slot] =
-                    pooled_to_detection(&sums, total, &self.model.bias, self.model.metadata.theta);
-            }
+        }
+
+        // Mean-pool (÷ the exact token count), bias, softmax, argmax, θ.
+        for (r, &(slot, _)) in rows.iter().enumerate() {
+            results[slot] = pooled_to_detection(
+                &sums[r],
+                ids[r].len() as u32,
+                &self.model.bias,
+                self.model.metadata.theta,
+            );
         }
         Ok(results)
     }
