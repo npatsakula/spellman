@@ -141,7 +141,11 @@ svod JIT plans, BEAM=16, k=1024, Tatoeba eval — 37,051 documents:
 | AMD AI 395 Max | v12 (2^17) | 1.2 µs/sample (~830k docs/s) | 13.0 µs/doc |
 
 Without the BEAM scheduler the default plan runs 5.1 µs/sample on the
-same hardware. The 2^18 table costs nothing measurable on the 7950X3D:
+same hardware. Since svod 0.1.0-alpha.5 the beam search runs in a
+separate helper process: `cargo install svod-tensor --bin
+svod-beam-worker` and point `SVOD_BEAM_WORKER` at the installed binary,
+otherwise `BEAM=16` fails at prepare time with "BEAM helper is
+unavailable" (the heuristic default needs nothing). The 2^18 table costs nothing measurable on the 7950X3D:
 the v12-era 2^17 model times identically (3.5 µs) on the same box, and
 the int8-row root and f16 store time identically too (the loader
 dequantizes once). Scoring is pure table lookups after the algebraic

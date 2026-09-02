@@ -103,6 +103,15 @@ Inference is pure table lookups: the trained network folds algebraically
 into a single quantized lookup table (`P = E·W`), executed by the [svod]
 JIT with a beam-searched schedule. No matmul, no embedding gathers.
 
+The beam-searched numbers above need svod's out-of-process search
+helper (the default heuristic schedule runs ~5 µs/sample without it):
+
+```sh
+cargo install svod-tensor --bin svod-beam-worker
+export SVOD_BEAM_WORKER=~/.cargo/bin/svod-beam-worker
+BEAM=16 spellman ...   # or --beam 16 in the examples
+```
+
 ## How it works
 
 A fastText-style linear model, engineered for the close-pair problem:

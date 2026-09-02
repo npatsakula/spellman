@@ -1,28 +1,32 @@
 //! Bulk-detection sweep over a markdown book: end-to-end throughput and the
 //! language histogram of every sentence.
 //!
-//! One plan is prepared up front on the main thread (warming svod's
-//! schedule/opt/kernel caches), then replicated per rayon worker — svod
-//! plans are not cloneable, but the replicas only pay planning and buffer
-//! allocation. Each worker owns its plan and input buffer, so batches never
-//! contend; the optimizer strategy is passed programmatically via
-//! `PrepareConfig` (beam vs heuristic), never through the BEAM env var.
+//! One plan is prepared up front on the main thread (planning + kernel
+//! compilation + weight upload happen once), then forked per rayon worker
+//! with `BulkDetector::replicate` — svod's plan replication gives each
+//! worker its own input/output buffers over the *shared* sealed weight
+//! storage, so a replica costs buffer allocation only. Workers get their
+//! replica through rayon's `map_init` (one per worker job, no mutex, no
+//! plan pool choreography); the optimizer strategy is passed
+//! programmatically via `PrepareConfig` (beam vs heuristic), never through
+//! the BEAM env var.
 //! Sentences are split from the markdown with our own rule-based
 //! splitter (`spellman_detector::sent` — terminator runs, «closers»,
 //! initials, decimals, dialogue-dash rules), with heading lines dropped
 //! first; see the module docs for why not UAX #29.
 //!
-//! Memory note: every replica holds its own weights and buffers (~16 MB
-//! each at the default k/batch).
+//! Memory note: replicas share one sealed copy of the weights; each adds
+//! only its input/output buffers (~2 MB at the default k/batch).
 //!
-//! Usage:
+//! Usage (`--beam > 0` needs svod's search helper: `cargo install
+//! svod-tensor --bin svod-beam-worker`, then `SVOD_BEAM_WORKER=<path>`;
+//! `--beam 0` uses the heuristic schedule and needs nothing):
 //!   cargo run --release --example detect_md -- \
 //!       --model ../../model --md ../../tests/voyna-i-mir.md \
 //!       --threads 16 --batch 512 --k 1024 --beam 16
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::Instant;
 
 use clap::Parser;
@@ -148,48 +152,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.min_chars
     );
 
-    // Warm-up plan on the main thread: compiles (or replays the disk cache
-    // for) the kernels once, so the replicas below only pay planning +
-    // buffer allocation.
+    // One prepared plan on the main thread: planning, kernel compilation
+    // (or the disk-cache replay), and the weight upload all happen here,
+    // once.
     let t0 = Instant::now();
-    let mut plans: Vec<BulkDetector> = vec![BulkDetector::load_with_prepare_config(
-        &model_dir, args.k, args.batch, &config,
-    )?];
-    println!("warm-up plan prepared in {:.2?}", t0.elapsed());
+    let base = BulkDetector::load_with_prepare_config(&model_dir, args.k, args.batch, &config)?;
+    println!("base plan prepared in {:.2?}", t0.elapsed());
 
+    // Show what a fork costs: buffers only — the weights stay shared.
     let t1 = Instant::now();
-    while plans.len() < args.threads {
-        plans.push(BulkDetector::load_with_prepare_config(
-            &model_dir, args.k, args.batch, &config,
-        )?);
-    }
-    println!(
-        "replicated to {} plans in {:.2?}",
-        plans.len(),
-        t1.elapsed()
-    );
+    drop(base.replicate()?);
+    println!("one replica forked in {:.2?}", t1.elapsed());
 
-    let plans = Mutex::new(plans);
     let shard = sentences.len().div_ceil(args.threads).max(args.batch);
     let rp = rayon::ThreadPoolBuilder::new()
         .num_threads(args.threads)
         .build()?;
 
+    // `map_init` is rayon's thread-local slot: each worker forks its own
+    // replica from the shared base and reuses it across the shards it
+    // steals — no mutex, no plan pool.
     let t = Instant::now();
     let tally = rp.install(|| {
         sentences
             .par_chunks(shard)
-            .map(|shard| {
-                let mut det = plans.lock().unwrap().pop().expect("more shards than plans");
-                let mut tally = Tally::default();
-                for chunk in shard.chunks(args.batch) {
-                    let texts: Vec<&str> = chunk.iter().map(String::as_str).collect();
-                    for d in det.detect_batch(&texts).expect("detect_batch") {
-                        tally.record(&d);
+            .map_init(
+                || base.replicate().expect("replicate plan"),
+                |det, shard| {
+                    let mut tally = Tally::default();
+                    for chunk in shard.chunks(args.batch) {
+                        let texts: Vec<&str> = chunk.iter().map(String::as_str).collect();
+                        for d in det.detect_batch(&texts).expect("detect_batch") {
+                            tally.record(&d);
+                        }
                     }
-                }
-                tally
-            })
+                    tally
+                },
+            )
             .reduce(Tally::default, Tally::merge)
     });
     let dt = t.elapsed();

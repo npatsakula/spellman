@@ -191,10 +191,10 @@ impl BulkDetector {
 
     /// [`Self::load`] with an explicit prepare configuration (optimizer
     /// strategy, beam width) instead of the environment-derived default —
-    /// the programmatic route svod's own benches take. Plans are not
-    /// cloneable, so parallel callers prepare one per worker; the first
-    /// prepare warms svod's schedule/opt/kernel caches and the replicas
-    /// only pay planning and buffer allocation.
+    /// the programmatic route svod's own benches take. Parallel callers
+    /// prepare one detector and fork it per worker with
+    /// [`Self::replicate`] — the fork shares the sealed weight storage and
+    /// pays buffer allocation only.
     pub fn load_with_prepare_config(
         dir: &std::path::Path,
         k: usize,
@@ -246,6 +246,22 @@ impl BulkDetector {
     ) -> Result<BulkDetector, BulkError> {
         let dir = crate::hub::download_model(repo_id, variant).context(HubSnafu)?;
         Self::load(&dir, k, max_batch)
+    }
+
+    /// Fork this detector for another worker thread: the execution plan is
+    /// replicated (fresh input/output buffers, shared sealed weight
+    /// storage), so the replica pays buffer allocation only — no planning,
+    /// no kernel compilation, no second weight upload. Host-side state
+    /// (feature config, bias, θ) is cloned. The canonical parallel pattern
+    /// is one `replicate()` per rayon worker via `map_init`; see the
+    /// `detect_md` example.
+    pub fn replicate(&self) -> Result<BulkDetector, BulkError> {
+        Ok(BulkDetector {
+            jit: self.jit.replicate().context(JitSnafu)?,
+            model: self.model.clone(),
+            k: self.k,
+            max_batch: self.max_batch,
+        })
     }
 
     pub fn detect_batch(&mut self, texts: &[&str]) -> Result<Vec<Detection>, BulkError> {
