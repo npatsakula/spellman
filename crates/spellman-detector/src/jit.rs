@@ -42,11 +42,101 @@ use crate::model::Model;
 
 /// Weight tensors for the JIT graph (device-resident, lazily computed).
 pub struct SpellmanModel {
-    /// `[2*(D+1), NUM_LANGS]` — `P` block then `-P` block, fp16.
+    /// `[2*(D+1), NUM_LANGS]` — `P` block then `-P` block: fp16, or int8
+    /// for column-quantized artifacts.
     table: Tensor,
+    /// How the plan's row-sums turn back into f32 logit sums.
+    readout: Readout,
+}
+
+/// Element type of the plan's `[b, C]` row-sums and how to widen them.
+#[derive(Clone, Debug)]
+pub enum Readout {
+    /// fp16 table, fp16 sums.
+    F16,
+    /// int8 table: svod accumulates an i8 sum in i32 (exact); the
+    /// per-column scale is applied host-side (`Σ s_c·q = s_c·Σ q`).
+    I32 { scales: Vec<f32> },
+}
+
+impl Readout {
+    fn elem_bytes(&self) -> usize {
+        match self {
+            Readout::F16 => 2,
+            Readout::I32 { .. } => 4,
+        }
+    }
+
+    /// Copy the first `rows` row-sums out of `jit`'s output buffer into
+    /// `out` as f32 logit sums (`rows × NUM_LANGS` values). `scratch` holds
+    /// the raw bytes between calls.
+    fn read_sums(
+        &self,
+        jit: &SpellmanJit,
+        rows: usize,
+        scratch: &mut Vec<u8>,
+        out: &mut [f32],
+    ) -> Result<(), BulkError> {
+        let n = rows * NUM_LANGS;
+        scratch.resize(n * self.elem_bytes(), 0);
+        jit.output()
+            .context(JitSnafu)?
+            .copyout_prefix(scratch)
+            .context(DeviceSnafu)?;
+        match self {
+            Readout::F16 => {
+                for (o, b) in out[..n].iter_mut().zip(scratch.as_chunks::<2>().0) {
+                    *o = f16_to_f32(u16::from_ne_bytes(*b));
+                }
+            }
+            Readout::I32 { scales } => {
+                for (i, (o, b)) in out[..n].iter_mut().zip(scratch.as_chunks::<4>().0).enumerate() {
+                    *o = i32::from_ne_bytes(*b) as f32 * scales[i % NUM_LANGS];
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl SpellmanModel {
+    /// The JIT weights for a loaded model: int8 scoring when the artifact
+    /// stores `P` as int8 with per-column scales (1.5–2.5× faster gather on
+    /// the shipped table, exact up to the artifact's own quantization),
+    /// otherwise the fp16 table.
+    pub fn for_model(model: &Model) -> Result<SpellmanModel, svod_tensor::error::Error> {
+        match &model.int8_columns {
+            Some(int8) => Self::from_int8_columns(&int8.q, &int8.scales, NUM_LANGS),
+            None => Self::from_table(&model.table, NUM_LANGS),
+        }
+    }
+
+    /// Build from an int8 table `[D+1, num_langs]` with per-column
+    /// `scales`. The ±q doubling stays in the graph, as in
+    /// [`Self::from_table`]; the i8 sum accumulates in i32, and the scales
+    /// are applied at read-out.
+    pub fn from_int8_columns(
+        q: &[i8],
+        scales: &[f32],
+        num_langs: usize,
+    ) -> Result<SpellmanModel, svod_tensor::error::Error> {
+        let rows = q.len() / num_langs;
+        // Born 2-D for the same fusion reason as `from_table`.
+        let p = Tensor::from_raw_bytes(
+            bytemuck::cast_slice(q),
+            &[rows, num_langs],
+            svod_dtype::DType::Int8,
+        )?;
+        let neg = -&p;
+        let jit_table = Tensor::cat(&[&p, &neg], 0)?;
+        Ok(SpellmanModel {
+            table: jit_table,
+            readout: Readout::I32 {
+                scales: scales.to_vec(),
+            },
+        })
+    }
+
     /// Build from the canonical (dequantized) host table `[D+1, NUM_LANGS]`
     /// f32 — the single representation the loader resolves from any storage
     /// precision. The f16 cast and the ±P doubling (`cat`) stay in the
@@ -72,11 +162,15 @@ impl SpellmanModel {
         .cast(svod_dtype::DType::Float16);
         let neg = -&p;
         let jit_table = Tensor::cat(&[&p, &neg], 0)?;
-        Ok(SpellmanModel { table: jit_table })
+        Ok(SpellmanModel {
+            table: jit_table,
+            readout: Readout::F16,
+        })
     }
 
     /// Build the gather-sum graph over a `[b, K]` bucket-index batch.
-    /// Returns raw fp16 row-sums `[b, C]`; mean-pooling, the bias add, the
+    /// Returns raw row-sums `[b, C]` (fp16, or i32 for an int8 table — see
+    /// [`Readout`]); mean-pooling, the scales, the bias add, the
     /// softmax, and the argmax all run host-side at read-out (30 floats per
     /// document, with the token counts featurization already computed).
     ///
@@ -204,6 +298,8 @@ pub struct BulkDetector {
     plans: Vec<Plan>,
     model: Model,
     max_batch: usize,
+    /// Shared by every rung: they gather from the same table.
+    readout: Readout,
 }
 
 impl BulkDetector {
@@ -250,8 +346,8 @@ impl BulkDetector {
         // (rather than letting each plan fold its own copy) keeps the
         // ladder at one table's worth of memory; the plans gather from the
         // shared buffer.
-        let inner = SpellmanModel::from_table(&model.table, NUM_LANGS).context(TensorSnafu)?;
-        let table = inner.table;
+        let SpellmanModel { table, readout } =
+            SpellmanModel::for_model(&model).context(TensorSnafu)?;
         table.realize().context(TensorSnafu)?;
         let rungs = K_LADDER
             .iter()
@@ -262,6 +358,7 @@ impl BulkDetector {
         for rung in rungs {
             let mut jit = SpellmanJit::new(SpellmanModel {
                 table: table.clone(),
+                readout: readout.clone(),
             })
             .with_b_fixed(max_batch);
             jit.prepare_with_config(InputSpec::i32(&[max_batch, rung]), config)
@@ -278,6 +375,7 @@ impl BulkDetector {
             plans,
             model,
             max_batch,
+            readout,
         })
     }
 
@@ -337,6 +435,7 @@ impl BulkDetector {
             plans,
             model: self.model.clone(),
             max_batch: self.max_batch,
+            readout: self.readout.clone(),
         })
     }
 
@@ -440,7 +539,8 @@ impl BulkDetector {
         }
 
         let mut sums: Vec<[f32; NUM_LANGS]> = vec![[0.0; NUM_LANGS]; ids.len()];
-        let mut out_f16 = vec![0u16; self.max_batch * NUM_LANGS];
+        let mut out = vec![0f32; self.max_batch * NUM_LANGS];
+        let mut scratch = Vec::new();
         for group in chunks.chunks(self.max_batch) {
             {
                 let mut view = plan
@@ -469,18 +569,14 @@ impl BulkDetector {
                 plan.dirty_rows = group.len();
             }
             plan.jit.execute().context(JitSnafu)?;
-            // Output buffer holds fp16 row-sums for the full compiled
-            // batch; read only the active rows.
-            let active = &mut out_f16[..group.len() * NUM_LANGS];
-            plan.jit
-                .output()
-                .context(JitSnafu)?
-                .copyout_prefix(bytemuck::cast_slice_mut(active))
-                .context(DeviceSnafu)?;
+            // Output buffer holds row-sums for the full compiled batch;
+            // read only the active rows.
+            self.readout
+                .read_sums(&plan.jit, group.len(), &mut scratch, &mut out)?;
             for (i, &(r, _)) in group.iter().enumerate() {
                 let acc = &mut sums[r];
-                for (x, &s) in acc.iter_mut().zip(&active[i * NUM_LANGS..][..NUM_LANGS]) {
-                    *x += f16_to_f32(s);
+                for (x, &s) in acc.iter_mut().zip(&out[i * NUM_LANGS..][..NUM_LANGS]) {
+                    *x += s;
                 }
             }
         }
@@ -525,16 +621,10 @@ pub fn f16_to_f32(bits: u16) -> f32 {
     f32::from_bits(out)
 }
 
-/// Host-side finisher shared by the JIT paths: mean-pool (÷ the token count
-/// featurization already computed), bias add, softmax + argmax over the
-/// class axis, and the θ uncertainty flag.
-fn logits_to_detection(sums_f16: &[u16], count: u32, bias: &[f32], theta: f32) -> Detection {
-    let sums: Vec<f32> = sums_f16.iter().map(|&s| f16_to_f32(s)).collect();
-    pooled_to_detection(&sums, count, bias, theta)
-}
-
-/// As [`logits_to_detection`] for f32-accumulated sums (the chunked
-/// long-document path adds per-chunk fp16 plan outputs in f32).
+/// Host-side finisher shared by the JIT paths, over f32 logit sums (see
+/// [`Readout`]; chunked long documents add per-chunk sums in f32):
+/// mean-pool (÷ the token count featurization already computed), bias add,
+/// softmax + argmax over the class axis, and the θ uncertainty flag.
 fn pooled_to_detection(sums: &[f32], count: u32, bias: &[f32], theta: f32) -> Detection {
     let inv = if count > 0 { 1.0 / count as f32 } else { 0.0 };
     let logits: Vec<f32> = sums.iter().zip(bias).map(|(&s, &b)| s * inv + b).collect();
@@ -560,7 +650,7 @@ fn pooled_to_detection(sums: &[f32], count: u32, bias: &[f32], theta: f32) -> De
 /// is specialized for fully static shapes — no symbolic batch rebinding on
 /// execution. Weights stay resident in the plan; the document's bucket
 /// indices are written straight into the host-mapped input buffer and the
-/// fp16 logits are read back through the plan's output buffer.
+/// row-sums are read back through the plan's output buffer.
 ///
 /// Counterpart to [`BulkDetector`] for one-shot use, with fully static
 /// shapes; see the README for the measured latency trade-offs.
@@ -568,6 +658,9 @@ pub struct SingleDetector {
     jit: SpellmanJit,
     model: Model,
     k: usize,
+    readout: Readout,
+    /// Raw output bytes, reused across calls.
+    scratch: Vec<u8>,
 }
 
 impl SingleDetector {
@@ -577,10 +670,17 @@ impl SingleDetector {
         let metadata = crate::model::read_metadata(dir).context(ModelSnafu)?;
         let sd = svod_model::state::load_safetensors_dir(dir).context(StateSnafu)?;
         let model = Model::from_state_dict(&sd, metadata).context(ModelSnafu)?;
-        let inner = SpellmanModel::from_table(&model.table, NUM_LANGS).context(TensorSnafu)?;
+        let inner = SpellmanModel::for_model(&model).context(TensorSnafu)?;
+        let readout = inner.readout.clone();
         let mut jit = SpellmanJit::new(inner).with_b_fixed(1);
         jit.prepare(InputSpec::i32(&[1, k])).context(JitSnafu)?;
-        Ok(SingleDetector { jit, model, k })
+        Ok(SingleDetector {
+            jit,
+            model,
+            k,
+            readout,
+            scratch: Vec::new(),
+        })
     }
 
     /// Load the default model from the Hugging Face Hub (f16 variant);
@@ -652,14 +752,11 @@ impl SingleDetector {
                 if (count as usize) < k {
                     // fast path: the whole document fit in one execute
                     self.jit.execute().context(JitSnafu)?;
-                    let mut sums_f16 = vec![0u16; NUM_LANGS];
-                    self.jit
-                        .output()
-                        .context(JitSnafu)?
-                        .copyout_prefix(bytemuck::cast_slice_mut(&mut sums_f16))
-                        .context(DeviceSnafu)?;
-                    return Ok(logits_to_detection(
-                        &sums_f16,
+                    let mut sums = [0f32; NUM_LANGS];
+                    self.readout
+                        .read_sums(&self.jit, 1, &mut self.scratch, &mut sums)?;
+                    return Ok(pooled_to_detection(
+                        &sums,
                         count,
                         &self.model.bias,
                         self.model.metadata.theta,
@@ -694,14 +791,11 @@ impl SingleDetector {
                         }
                     }
                     self.jit.execute().context(JitSnafu)?;
-                    let mut sums_f16 = vec![0u16; NUM_LANGS];
-                    self.jit
-                        .output()
-                        .context(JitSnafu)?
-                        .copyout_prefix(bytemuck::cast_slice_mut(&mut sums_f16))
-                        .context(DeviceSnafu)?;
-                    for (a, &s) in acc.iter_mut().zip(&sums_f16) {
-                        *a += f16_to_f32(s);
+                    let mut sums = [0f32; NUM_LANGS];
+                    self.readout
+                        .read_sums(&self.jit, 1, &mut self.scratch, &mut sums)?;
+                    for (a, &s) in acc.iter_mut().zip(&sums) {
+                        *a += s;
                     }
                 }
                 Ok(pooled_to_detection(
@@ -767,6 +861,47 @@ mod tests {
         // A smaller batch rebinds `b` on the same plan.
         let res2 = det.detect_batch(&["ещё раз"]).unwrap();
         assert!(res2[0].lang.is_some());
+    }
+
+    #[test]
+    fn int8_column_artifacts_score_in_int8_like_f16() {
+        // The fixture's two weights are their own column maxima, so they
+        // quantize exactly: the int8 plan (i32 sums × column scale) must
+        // reproduce the f16 plan. Row-scaled int8 cannot factor its scales
+        // out of the K-sum and stays on the f16 path.
+        let f16_dir = tempfile::tempdir().unwrap();
+        crate::model::test_support::write_test_model(f16_dir.path());
+        let col_dir = tempfile::tempdir().unwrap();
+        crate::model::test_support::write_int8_model(col_dir.path(), "column");
+        let row_dir = tempfile::tempdir().unwrap();
+        crate::model::test_support::write_int8_model(row_dir.path(), "row");
+
+        let model = |dir: &tempfile::TempDir| Model::load(dir.path()).unwrap();
+        assert!(matches!(
+            SpellmanModel::for_model(&model(&col_dir)).unwrap().readout,
+            Readout::I32 { .. }
+        ));
+        assert!(matches!(
+            SpellmanModel::for_model(&model(&row_dir)).unwrap().readout,
+            Readout::F16
+        ));
+
+        let texts = ["Привет, как дела?", "Hello world", "ещё раз", "12345"];
+        let long = "Привет, как дела? Это длинный документ. ".repeat(60);
+        let mut f16 = BulkDetector::load(f16_dir.path(), 16, 8).unwrap();
+        let mut int8 = BulkDetector::load(col_dir.path(), 16, 8).unwrap();
+        let mut single = SingleDetector::load(col_dir.path(), 16).unwrap();
+        let expect = f16.detect_batch(&texts).unwrap();
+        for (a, b) in expect.iter().zip(int8.detect_batch(&texts).unwrap()) {
+            assert_eq!(a.lang, b.lang);
+            assert!((a.confidence - b.confidence).abs() < 1e-3);
+        }
+        for text in texts.iter().copied().chain([long.as_str()]) {
+            let a = f16.detect_batch(&[text]).unwrap().remove(0);
+            let b = single.detect(text).unwrap();
+            assert_eq!(a.lang, b.lang, "{text:?}");
+            assert!((a.confidence - b.confidence).abs() < 1e-3, "{text:?}");
+        }
     }
 
     #[test]

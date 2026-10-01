@@ -109,6 +109,20 @@ pub struct Model {
     pub log2_d: u32,
     pub features: FeatureConfig,
     pub hasher: FeatureHasher,
+    /// The stored int8 table and its per-column scales, kept only for
+    /// `int8`/`column` artifacts: column scales factor out of the K-sum
+    /// (`Σ s_c·q = s_c·Σ q`), so these artifacts can be scored in int8
+    /// without dequantizing — see [`crate::jit::SpellmanModel::from_int8_columns`].
+    pub int8_columns: Option<ColumnInt8>,
+}
+
+/// An int8 folded table with per-language-column scales.
+#[derive(Clone, Debug)]
+pub struct ColumnInt8 {
+    /// `[D+1][NUM_LANGS]`, row-major; the padding row `D` is all-zero.
+    pub q: Vec<i8>,
+    /// Per-column scale: `P[r][c] = q[r][c] · scales[c]`.
+    pub scales: Vec<f32>,
 }
 
 #[derive(Debug, snafu::Snafu)]
@@ -170,7 +184,7 @@ impl Model {
         metadata: ModelMetadata,
     ) -> Result<Model, ModelError> {
         Self::validate(&metadata)?;
-        let (p, bias) = resolve_table(sd, &metadata)?;
+        let (p, bias, int8_columns) = resolve_table(sd, &metadata)?;
 
         let d = 1usize << metadata.log2_d;
         if p.len() != (d + 1) * NUM_LANGS {
@@ -207,6 +221,7 @@ impl Model {
             log2_d,
             features,
             hasher,
+            int8_columns,
         })
     }
 
@@ -276,16 +291,21 @@ impl Model {
     }
 }
 
+/// `(table, bias, int8 columns)` as [`resolve_table`] returns them.
+type ResolvedTable = (Vec<f32>, Vec<f32>, Option<ColumnInt8>);
+
 /// Reconstruct the canonical f32 folded table and bias from a state dict,
 /// whatever the storage precision. This is the single place that knows
 /// about quantization; every downstream consumer (host scorer, JIT table)
-/// sees only the resolved representation.
+/// sees the resolved representation. `int8`/`column` artifacts also hand
+/// back their stored values and scales for int8 scoring.
 fn resolve_table(
     sd: &svod_model::state::StateDict,
     metadata: &ModelMetadata,
-) -> Result<(Vec<f32>, Vec<f32>), ModelError> {
+) -> Result<ResolvedTable, ModelError> {
     let d = 1usize << metadata.log2_d;
     let bias = read_cast_f32(sd, "bias")?;
+    let mut int8_columns = None;
 
     let mut table = match (
         metadata.quant.dtype.as_str(),
@@ -304,11 +324,16 @@ fn resolve_table(
                 });
             }
             let values: Vec<f32> = if dtype == "int8" {
-                read_i8(sd, "P")?
-                    .into_iter()
-                    .map(i32::from)
-                    .map(|v| v as f32)
-                    .collect()
+                let mut q = read_i8(sd, "P")?;
+                let values = q.iter().map(|&v| f32::from(v)).collect();
+                if !per_row && q.len() == (d + 1) * NUM_LANGS {
+                    q[d * NUM_LANGS..].fill(0);
+                    int8_columns = Some(ColumnInt8 {
+                        q,
+                        scales: scales.clone(),
+                    });
+                }
+                values
             } else {
                 read_u8(sd, "P")?.iter().map(|&b| e4m3_to_f32(b)).collect()
             };
@@ -328,11 +353,12 @@ fn resolve_table(
     };
 
     // The padding row D is part of the contract (all-zero); enforce it
-    // regardless of what rounding did.
+    // regardless of what rounding did (the int8 copy above is zeroed the
+    // same way).
     for c in 0..NUM_LANGS {
         table[d * NUM_LANGS + c] = 0.0;
     }
-    Ok((table, bias))
+    Ok((table, bias, int8_columns))
 }
 
 /// Read a tensor as host f32 values (f16 and f32 storage both legal on the
