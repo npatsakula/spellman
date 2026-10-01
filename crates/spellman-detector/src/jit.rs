@@ -667,37 +667,64 @@ fn pooled_to_detection(sums: &[f32], count: u32, bias: &[f32], theta: f32) -> De
 /// Single-document svod detector: the same graph as [`BulkDetector`] with
 /// **B = 1 baked in at compile time** (`with_b_fixed(1)`), so every kernel
 /// is specialized for fully static shapes — no symbolic batch rebinding on
-/// execution. Weights stay resident in the plan; the document's bucket
-/// indices are written straight into the host-mapped input buffer and the
-/// row-sums are read back through the plan's output buffer.
+/// execution. Weights stay resident in the plans; the document's bucket
+/// indices are copied into the host-mapped input buffer and the row-sums
+/// are read back through the plan's output buffer.
 ///
-/// Counterpart to [`BulkDetector`] for one-shot use, with fully static
-/// shapes; see the README for the measured latency trade-offs.
+/// Like [`BulkDetector`] it keeps a ladder of plans over `K` (64 / 256 /
+/// the caller's `k`, sharing one realized table) and scores each document
+/// on the smallest rung that holds it: the gather does `K` work whatever
+/// the document holds, so a short query on a K=1024 plan was ~98% padding
+/// (≤20-character held-out rows: 21.7 → 3.9 µs/doc at K=64, M4 Max).
 pub struct SingleDetector {
-    jit: SpellmanJit,
+    /// Ascending K; the last rung is the caller's `k`.
+    plans: Vec<SinglePlan>,
     model: Model,
-    k: usize,
     readout: Readout,
+    /// The document's signed bucket ids, reused across calls.
+    ids: Vec<i32>,
     /// Raw output bytes, reused across calls.
     scratch: Vec<u8>,
 }
 
+/// One B=1 plan of the [`SingleDetector`] ladder.
+struct SinglePlan {
+    jit: SpellmanJit,
+    k: usize,
+}
+
 impl SingleDetector {
-    /// Compile the B=1 plan. `k` is the per-document token budget
-    /// (K ≥ 1024 for paragraph text — see [`BulkDetector`]).
+    /// Compile the B=1 plan ladder. `k` is the per-document token budget of
+    /// the top rung (K ≥ 1024 for paragraph text — see [`BulkDetector`]);
+    /// longer documents are chunk-accumulated, never truncated.
     pub fn load(dir: &std::path::Path, k: usize) -> Result<SingleDetector, BulkError> {
         let metadata = crate::model::read_metadata(dir).context(ModelSnafu)?;
         let sd = svod_model::state::load_safetensors_dir(dir).context(StateSnafu)?;
         let model = Model::from_state_dict(&sd, metadata).context(ModelSnafu)?;
-        let inner = SpellmanModel::for_model(&model).context(TensorSnafu)?;
-        let readout = inner.readout.clone();
-        let mut jit = SpellmanJit::new(inner).with_b_fixed(1);
-        jit.prepare(InputSpec::i32(&[1, k])).context(JitSnafu)?;
+        let k = k.max(1);
+        let SpellmanModel { table, readout } =
+            SpellmanModel::for_model(&model).context(TensorSnafu)?;
+        table.realize().context(TensorSnafu)?;
+        let mut plans = Vec::new();
+        for rung in K_LADDER
+            .iter()
+            .copied()
+            .filter(|&rung| rung < k)
+            .chain(std::iter::once(k))
+        {
+            let mut jit = SpellmanJit::new(SpellmanModel {
+                table: table.clone(),
+                readout: readout.clone(),
+            })
+            .with_b_fixed(1);
+            jit.prepare(InputSpec::i32(&[1, rung])).context(JitSnafu)?;
+            plans.push(SinglePlan { jit, k: rung });
+        }
         Ok(SingleDetector {
-            jit,
+            plans,
             model,
-            k,
             readout,
+            ids: Vec::new(),
             scratch: Vec::new(),
         })
     }
@@ -719,13 +746,13 @@ impl SingleDetector {
 
     /// Detect the language of one document of ANY size.
     ///
-    /// Documents up to the compile-time token budget K take the fast
-    /// path (one plan execute, unchanged). Longer documents are scored
-    /// in full — no truncation, no position bias — by laying the
-    /// feature ids into K-sized chunks and summing the per-chunk plan
-    /// outputs. The folded model's score is additive over ids, so the
-    /// chunked sum IS the exact untruncated document score (a French
-    /// opening over a Russian body reads all the way down).
+    /// A document that fits a rung takes one execute on the smallest such
+    /// plan. Longer documents are scored in full — no truncation, no
+    /// position bias — by laying the feature ids into top-rung chunks and
+    /// summing the per-chunk plan outputs. The folded model's score is
+    /// additive over ids, so the chunked sum IS the exact untruncated
+    /// document score (a French opening over a Russian body reads all the
+    /// way down).
     pub fn detect(&mut self, text: &str) -> Result<Detection, BulkError> {
         match crate::route::route(text) {
             crate::route::Route::Direct(lang) => Ok(Detection {
@@ -739,87 +766,51 @@ impl SingleDetector {
                 is_uncertain: true,
             }),
             crate::route::Route::Group(_) => {
-                let d = self.model.num_buckets();
-                let k = self.k;
                 let model = &self.model;
-                let count;
-                {
-                    let mut view = self
-                        .jit
-                        .idx_mut()
-                        .context(JitSnafu)?
-                        .as_array_mut::<i32>()
-                        .context(DeviceSnafu)?;
-                    let flat: &mut [i32] = view.as_slice_mut().ok_or_else(|| BulkError::View {
-                        message: "input buffer not contiguous".into(),
-                    })?;
-                    let row = &mut flat[..k];
-                    let pad = d as i32;
-                    let out = crate::features::fill_signed_indices(
-                        text,
-                        &model.features,
-                        &model.hasher,
-                        model.log2_d,
-                        k,
-                        row,
-                    );
-                    for dst in &mut row[out..] {
-                        *dst = pad;
-                    }
-                    count = out as u32;
-                }
-                if (count as usize) < k {
-                    // fast path: the whole document fit in one execute
-                    self.jit.execute().context(JitSnafu)?;
-                    let mut sums = [0f32; NUM_LANGS];
-                    self.readout
-                        .read_sums(&self.jit, 1, &mut self.scratch, &mut sums)?;
-                    return Ok(pooled_to_detection(
-                        &sums,
-                        count,
-                        &self.model.bias,
-                        self.model.metadata.theta,
-                    ));
-                }
-                // the row filled to K: the document may continue past the
-                // budget — featurize it in full (the k-truncation above
-                // dropped nothing a re-scan won't re-emit) and accumulate
-                // exact chunk sums
-                let mut ids: Vec<i32> = Vec::with_capacity(text.len() / 2 + 8);
-                crate::features::for_each_key(text, &model.features, |key| {
-                    ids.push(model.hasher.signed_index(key, model.log2_d));
-                });
-                let total = ids.len() as u32;
-                let mut acc = vec![0f32; NUM_LANGS];
-                for chunk in ids.chunks(k) {
+                self.ids.clear();
+                crate::features::push_signed_indices(
+                    text,
+                    &model.features,
+                    &model.hasher,
+                    model.log2_d,
+                    &mut self.ids,
+                );
+                let pad = model.num_buckets() as i32;
+                // Smallest rung that holds the document; the top rung
+                // otherwise, chunk-accumulated.
+                let rung = self
+                    .plans
+                    .iter()
+                    .position(|plan| plan.k >= self.ids.len())
+                    .unwrap_or(self.plans.len() - 1);
+                let plan = &mut self.plans[rung];
+                let mut acc = [0f32; NUM_LANGS];
+                for chunk in self.ids.chunks(plan.k) {
                     {
-                        let mut view = self
+                        let mut view = plan
                             .jit
                             .idx_mut()
                             .context(JitSnafu)?
                             .as_array_mut::<i32>()
                             .context(DeviceSnafu)?;
-                        let flat: &mut [i32] =
+                        let row: &mut [i32] =
                             view.as_slice_mut().ok_or_else(|| BulkError::View {
                                 message: "input buffer not contiguous".into(),
                             })?;
-                        let row = &mut flat[..k];
                         row[..chunk.len()].copy_from_slice(chunk);
-                        for dst in &mut row[chunk.len()..] {
-                            *dst = d as i32;
-                        }
+                        row[chunk.len()..].fill(pad);
                     }
-                    self.jit.execute().context(JitSnafu)?;
+                    plan.jit.execute().context(JitSnafu)?;
                     let mut sums = [0f32; NUM_LANGS];
                     self.readout
-                        .read_sums(&self.jit, 1, &mut self.scratch, &mut sums)?;
+                        .read_sums(&plan.jit, 1, &mut self.scratch, &mut sums)?;
                     for (a, &s) in acc.iter_mut().zip(&sums) {
                         *a += s;
                     }
                 }
                 Ok(pooled_to_detection(
                     &acc,
-                    total,
+                    self.ids.len() as u32,
                     &self.model.bias,
                     self.model.metadata.theta,
                 ))
@@ -920,6 +911,35 @@ mod tests {
             let b = single.detect(text).unwrap();
             assert_eq!(a.lang, b.lang, "{text:?}");
             assert!((a.confidence - b.confidence).abs() < 1e-3, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn single_ladder_rungs_score_like_one_plan() {
+        // Padding gathers the all-zero row and long documents are
+        // chunk-summed, so whichever rung scores a document — K=64, 256,
+        // the top K=1024, or top-rung chunks past it — the detection must
+        // match a single-rung detector that only ever pads or chunks.
+        let tmp = tempfile::tempdir().unwrap();
+        crate::model::test_support::write_test_model(tmp.path());
+        let mut ladder = SingleDetector::load(tmp.path(), 1024).unwrap();
+        let mut single_rung = SingleDetector::load(tmp.path(), 16).unwrap();
+        assert_eq!(
+            ladder.plans.iter().map(|p| p.k).collect::<Vec<_>>(),
+            [64, 256, 1024]
+        );
+        let sentence = "Привет, как дела? ";
+        for repeats in [1, 10, 40, 120] {
+            let text = sentence.repeat(repeats);
+            let a = ladder.detect(&text).unwrap();
+            let b = single_rung.detect(&text).unwrap();
+            assert_eq!(a.lang, b.lang, "{repeats} repeats");
+            assert!(
+                (a.confidence - b.confidence).abs() < 1e-3,
+                "{repeats} repeats: {} vs {}",
+                a.confidence,
+                b.confidence
+            );
         }
     }
 
