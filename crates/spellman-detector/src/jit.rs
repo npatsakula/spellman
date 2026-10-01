@@ -327,6 +327,38 @@ pub enum BulkError {
     BatchTooLarge { len: usize, max: usize },
 }
 
+/// The host-side part of a loaded model the detectors keep after their
+/// plans are built: featurization config and the read-out constants. The
+/// resolved tables only seed the svod weights at load time and are dropped
+/// there — a [`BulkDetector::replicate`] used to deep-copy them along with
+/// the rest of `Model` (~39 MB per replica at 2^18), while svod's own
+/// `replicate` already shares the weights.
+#[derive(Clone, Debug)]
+struct HostModel {
+    features: crate::features::FeatureConfig,
+    hasher: crate::hash::FeatureHasher,
+    log2_d: u32,
+    bias: Vec<f32>,
+    theta: f32,
+}
+
+impl HostModel {
+    fn new(model: &Model) -> HostModel {
+        HostModel {
+            features: model.features,
+            hasher: model.hasher,
+            log2_d: model.log2_d,
+            bias: model.bias.clone(),
+            theta: model.metadata.theta,
+        }
+    }
+
+    /// Number of buckets `D`; the padding index.
+    fn num_buckets(&self) -> u32 {
+        1u32 << self.log2_d
+    }
+}
+
 /// Per-call plan ladder: every call scores all of its rows on the smallest
 /// plan whose `K` covers the longest row (the caller's `k` is the top rung;
 /// rungs at or above it are dropped). The gather kernel does `B × K` work
@@ -372,7 +404,7 @@ struct Plan {
 pub struct BulkDetector {
     /// Ascending K; the last rung is the caller's `k`.
     plans: Vec<Plan>,
-    model: Model,
+    model: HostModel,
     max_batch: usize,
     /// Shared by every rung: they gather from the same table.
     readout: Readout,
@@ -445,7 +477,7 @@ impl BulkDetector {
         }
         Ok(BulkDetector {
             plans,
-            model,
+            model: HostModel::new(&model),
             max_batch,
             readout,
         })
@@ -687,7 +719,7 @@ impl BulkDetector {
                 &sums[r],
                 ids[r].len() as u32,
                 &self.model.bias,
-                self.model.metadata.theta,
+                self.model.theta,
             );
         }
         Ok(results)
@@ -777,7 +809,7 @@ fn pooled_to_detection(sums: &[f32], count: u32, bias: &[f32], theta: f32) -> De
 pub struct SingleDetector {
     /// Ascending K; the last rung is the caller's `k`.
     plans: Vec<SinglePlan>,
-    model: Model,
+    model: HostModel,
     readout: Readout,
     /// The document's signed bucket ids, reused across calls.
     ids: Vec<i32>,
@@ -829,7 +861,7 @@ impl SingleDetector {
         }
         Ok(SingleDetector {
             plans,
-            model,
+            model: HostModel::new(&model),
             readout,
             ids: Vec::new(),
             scratch: Vec::new(),
@@ -911,7 +943,7 @@ impl SingleDetector {
                     &acc,
                     self.ids.len() as u32,
                     &self.model.bias,
-                    self.model.metadata.theta,
+                    self.model.theta,
                 ))
             }
         }
