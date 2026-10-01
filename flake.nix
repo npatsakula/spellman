@@ -39,7 +39,8 @@
           filter =
             path: type:
             (craneLib.filterCargoSources path type)
-            # .cargo/config.toml carries the -C target-cpu=native build policy
+            # .cargo/config.toml carries the local build policy (overridden
+            # below by RUSTFLAGS)
             || (pkgs.lib.hasSuffix "/.cargo/config.toml" path)
             # tests/hash_vectors.rs reads the Python-generated parity fixture
             || (pkgs.lib.hasSuffix ".json" path);
@@ -68,6 +69,12 @@
           inherit src nativeBuildInputs;
           LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
           hardeningDisable = [ "all" ];
+          # Store paths are shared through the binary cache, so they must not
+          # carry .cargo/config.toml's `target-cpu=native`: a binary built on
+          # an AVX-512 runner died with SIGILL on another. RUSTFLAGS takes
+          # precedence over build.rustflags; x86-64-v3 (AVX2) keeps the
+          # featurizer's hash loop vectorized.
+          RUSTFLAGS = "-C target-cpu=x86-64-v3";
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
@@ -80,7 +87,8 @@
               inherit cargoArtifacts;
               # the root manifest is virtual; give the store path a real name
               pname = "spellman";
-              version = "0.1.0";
+              version = "0.1.0-alpha.7";
+              meta.mainProgram = "spellman";
             }
           );
           default = spellman;

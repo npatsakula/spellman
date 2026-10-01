@@ -3810,7 +3810,7 @@ dependencies = [
 
 [[package]]
 name = "spellman-cli"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.7"
 dependencies = [
  "clap",
  "serde_json",
@@ -3819,7 +3819,7 @@ dependencies = [
 
 [[package]]
 name = "spellman-detector"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.7"
 dependencies = [
  "bytemuck",
  "clap",
@@ -3844,7 +3844,7 @@ dependencies = [
 
 [[package]]
 name = "spellman-language"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.7"
 
 [[package]]
 name = "stable_deref_trait"
