@@ -69,8 +69,8 @@ impl SpellmanModel {
             &[rows, num_langs],
             svod_dtype::DType::Float32,
         )?
-        .cast(svod_dtype::DType::Float16)?;
-        let neg = p.try_neg()?;
+        .cast(svod_dtype::DType::Float16);
+        let neg = -&p;
         let jit_table = Tensor::cat(&[&p, &neg], 0)?;
         Ok(SpellmanModel { table: jit_table })
     }
@@ -94,9 +94,17 @@ impl SpellmanModel {
         // The prepare-time placeholder is allocated at max batch; shrink to
         // the symbolic batch for kernel specialization at bind time.
         let idx = idx.try_shrink([Some((SInt::Const(0), bv.clone())), None])?;
-        let idx = idx.cast(svod_dtype::DType::Int64)?;
         // Row-gather the ±P table: [b, K] -> [b, K, C]. `embedding` needs a
         // concrete index shape, which is exactly why K stays a JIT constant.
+        //
+        // The indices stay i32 on purpose (the largest table offset,
+        // 2·(2^18+1)·30 ≈ 15.7M, fits). `embedding` builds a one-hot
+        // `where(idx == arange, table, 0)` reduce that the scheduler must
+        // collapse into a direct row load; svod's collapse strips a single
+        // cast off the range side, and since alpha.7 `arange` is i32, so an
+        // i64 index made that side `cast(i64, cast(i32, range))` — the
+        // collapse missed and every token scanned all 2·(D+1) table rows.
+        // Do not cast `idx` to i64 here.
         let rows = self.table.embedding(&idx)?;
         rows.sum(1)
     }
@@ -243,7 +251,7 @@ impl BulkDetector {
         // ladder at one table's worth of memory; the plans gather from the
         // shared buffer.
         let inner = SpellmanModel::from_table(&model.table, NUM_LANGS).context(TensorSnafu)?;
-        let mut table = inner.table;
+        let table = inner.table;
         table.realize().context(TensorSnafu)?;
         let rungs = K_LADDER
             .iter()

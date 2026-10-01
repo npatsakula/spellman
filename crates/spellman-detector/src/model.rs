@@ -348,15 +348,13 @@ fn read_cast_f32(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<f3
         .ok_or_else(|| ModelError::MissingTensor {
             name: name.to_owned(),
         })?;
-    let mut cast = tensor
-        .cast(svod_dtype::DType::Float32)
-        .context(TensorSnafu)?;
+    let cast = tensor.cast(svod_dtype::DType::Float32);
     cast.realize().context(TensorSnafu)?;
     cast.as_vec::<f32>().context(TensorSnafu)
 }
 
 fn read_i8(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<i8>, ModelError> {
-    let mut tensor = sd
+    let tensor = sd
         .get(name)
         .cloned()
         .ok_or_else(|| ModelError::MissingTensor {
@@ -367,7 +365,7 @@ fn read_i8(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<i8>, Mod
 }
 
 fn read_u8(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<u8>, ModelError> {
-    let mut tensor = sd
+    let tensor = sd
         .get(name)
         .cloned()
         .ok_or_else(|| ModelError::MissingTensor {
