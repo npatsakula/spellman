@@ -280,7 +280,9 @@ pub fn token_keys(text: &str, cfg: &FeatureConfig) -> Vec<u64> {
 /// Emission order affects nothing observable — the model consumes the token
 /// multiset (float summation order shifts within rounding noise).
 pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
-    let n_max = cfg.n_max as usize;
+    // Clamped to the tag table so the per-key `N_TAG[n]` needs no check.
+    let n_max = (cfg.n_max as usize).min(N_TAG.len() - 1);
+    let n_min = cfg.n_min as usize;
     let mut r: u64 = 0;
     let mut len: usize = 0;
     // Hash of the previous retained word (None before the first): the
@@ -289,30 +291,34 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
     // sequence of retained words.
     let mut prev_word: Option<u64> = None;
 
+    // Runs once per character: always inlined, with a plain range over the
+    // window lengths, so the packer state stays in registers (an outlined
+    // `feed` saved/restored 12 registers per character and stepped a
+    // `Take<Enumerate<Iter>>` through the stack, `nth` call included).
+    #[inline(always)]
+    // The indexed loop is the point: the `enumerate().take().skip()` form
+    // clippy suggests is the one that compiled to an outlined `nth` call.
+    #[allow(clippy::needless_range_loop)]
     fn feed<F: FnMut(u64)>(
         r: &mut u64,
         len: &mut usize,
         c: u64,
-        cfg: &FeatureConfig,
+        n_min: usize,
         n_max: usize,
         f: &mut F,
     ) {
         *r = (*r << CP_BITS) | (c & CP_MASK);
         *len += 1;
-        let upper = n_max.min(*len);
-        for (n, tag) in N_TAG
-            .iter()
-            .enumerate()
-            .take(upper + 1)
-            .skip(cfg.n_min as usize)
-        {
+        // Half-open on purpose: `RangeInclusive` carries an exhausted flag
+        // that compiled to ~86 instructions of loop control here.
+        for n in n_min..n_max.min(*len) + 1 {
             let window = match n {
                 1 => *r & M1,
                 2 => *r & M2,
                 3 => *r & M3,
                 _ => *r, // 4- and 5-gram windows wrap; window is the full register
             };
-            f(window ^ tag);
+            f(window ^ N_TAG[n]);
         }
     }
 
@@ -339,22 +345,22 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
             WordClass::Num => Some(SENTINEL_NUM),
         };
         let mut h: u64 = FNV_OFFSET;
-        feed(&mut r, &mut len, BOW as u64, cfg, n_max, &mut f);
+        feed(&mut r, &mut len, BOW as u64, n_min, n_max, &mut f);
         match sentinel {
             Some(s) => {
-                feed(&mut r, &mut len, s as u64, cfg, n_max, &mut f);
+                feed(&mut r, &mut len, s as u64, n_min, n_max, &mut f);
                 h = fnv_step(h, s as u64);
             }
             None => {
                 for c in word.chars() {
                     match fast_lower(c) {
                         Some(lc) => {
-                            feed(&mut r, &mut len, lc as u64, cfg, n_max, &mut f);
+                            feed(&mut r, &mut len, lc as u64, n_min, n_max, &mut f);
                             h = fnv_step(h, lc as u64);
                         }
                         None => {
                             for lc in c.to_lowercase() {
-                                feed(&mut r, &mut len, lc as u64, cfg, n_max, &mut f);
+                                feed(&mut r, &mut len, lc as u64, n_min, n_max, &mut f);
                                 h = fnv_step(h, lc as u64);
                             }
                         }
@@ -362,7 +368,7 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
                 }
             }
         }
-        feed(&mut r, &mut len, EOW as u64, cfg, n_max, &mut f);
+        feed(&mut r, &mut len, EOW as u64, n_min, n_max, &mut f);
         // Lexical channel, interleaved after the word's char n-grams: the
         // whole-word key, then the adjacent-word bigram key (none before the
         // first word). Interleaving keeps this streaming — no word-hash
@@ -475,9 +481,13 @@ pub fn fill_signed_indices(
 }
 
 /// Append every signed bucket token of `text` to `out` (no truncation):
-/// the [`fill_signed_indices`] emission loop over a growable row, for
-/// callers that need the exact token count before choosing a plan K and
-/// that chunk long rows themselves.
+/// the row the detectors score, for callers that need the exact token count
+/// before choosing a plan K and that chunk long rows themselves.
+///
+/// Two passes over a per-thread key buffer: the packer emits every key (a
+/// shift, a mask and an xor each), then [`FeatureHasher::signed_indices`]
+/// hashes the whole slice in one vectorized loop straight into `out` —
+/// instead of an 8-key buffer flushed through a hash call and an extend.
 pub fn push_signed_indices(
     text: &str,
     cfg: &FeatureConfig,
@@ -485,21 +495,18 @@ pub fn push_signed_indices(
     log2_d: u32,
     out: &mut Vec<i32>,
 ) {
-    let mut buf = [0u64; 8];
-    let mut nbuf = 0usize;
-    let mut block = [0i32; 8];
-    for_each_key(text, cfg, |key| {
-        buf[nbuf] = key;
-        nbuf += 1;
-        if nbuf == 8 {
-            nbuf = 0;
-            hasher.signed_index_block(&buf, log2_d, &mut block);
-            out.extend_from_slice(&block);
-        }
-    });
-    for &key in &buf[..nbuf] {
-        out.push(hasher.signed_index(key, log2_d));
+    thread_local! {
+        static KEYS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
     }
+    KEYS.with_borrow_mut(|keys| {
+        keys.clear();
+        // ~2.7 keys per input byte on the held-out mix.
+        keys.reserve(text.len() * 3);
+        for_each_key(text, cfg, |key| keys.push(key));
+        let start = out.len();
+        out.resize(start + keys.len(), 0);
+        hasher.signed_indices(keys, log2_d, &mut out[start..]);
+    });
 }
 
 /// Flush one full 8-key block through [`FeatureHasher::signed_index_block`],

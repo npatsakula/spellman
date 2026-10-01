@@ -160,6 +160,7 @@ impl FeatureHasher {
     /// `-C target-cpu=native` or `target-feature=+avx2`, NEON on aarch64).
     /// No dispatch, no unsafe: a baseline build simply keeps the scalar
     /// code, correct and slower. Other hash ids ride the per-key path.
+    #[inline]
     pub fn signed_index_block(&self, keys: &[u64; 8], log2_d: u32, out: &mut [i32]) {
         debug_assert!(out.len() >= 8);
         debug_assert!(log2_d > 0 && log2_d < 32);
@@ -192,6 +193,33 @@ impl FeatureHasher {
             }
         }
         out[..8].copy_from_slice(&idx);
+    }
+
+    /// Hash a whole key slice into signed table indices, `out[i]` for
+    /// `keys[i]` — the same arithmetic as [`Self::signed_index_block`], as one
+    /// flat loop LLVM vectorizes across the slice (no per-block call or
+    /// buffer). `out` must be at least as long as `keys`.
+    pub fn signed_indices(&self, keys: &[u64], log2_d: u32, out: &mut [i32]) {
+        debug_assert!(log2_d > 0 && log2_d < 32);
+        let out = &mut out[..keys.len()];
+        if self.id == HashId::Fmix32 {
+            let seed_k1 = self.seed.wrapping_mul(0x85EB_CA6B);
+            let d1 = (1u32 << log2_d) + 1;
+            let shift = 32 - log2_d;
+            for (o, &k) in out.iter_mut().zip(keys) {
+                let mut h = (k as u32) ^ seed_k1 ^ ((k >> 32) as u32).wrapping_mul(0xC2B2_AE35);
+                h ^= h >> 16;
+                h = h.wrapping_mul(0x85EB_CA6B);
+                h ^= h >> 13;
+                h = h.wrapping_mul(0xC2B2_AE35);
+                h ^= h >> 16;
+                *o = ((h >> shift).wrapping_add((h & 1).wrapping_mul(d1))) as i32;
+            }
+        } else {
+            for (o, &k) in out.iter_mut().zip(keys) {
+                *o = self.signed_index(k, log2_d);
+            }
+        }
     }
 
     /// Signed table index of a single key (`bucket`, or `D+1+bucket` for
@@ -300,6 +328,41 @@ mod tests {
         }
         let max = counts.iter().copied().max().unwrap();
         assert!(max < 12, "max bucket occupancy {max} too skewed");
+    }
+
+    #[test]
+    fn signed_indices_matches_scalar() {
+        // The slice hasher must reproduce per-key signed_index exactly, for
+        // every hash id and over lengths that are not a multiple of any
+        // vector width.
+        let mut key = 0x1357_9BDF_2468_ACE0u64;
+        let keys: Vec<u64> = (0..1003)
+            .map(|_| {
+                key = key
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                key
+            })
+            .collect();
+        for id in HashId::ALL {
+            let hasher = FeatureHasher {
+                id,
+                seed: 0x9E37_79B9,
+            };
+            for log2_d in [4u32, 12, 17, 18, 24] {
+                for len in [0, 1, 7, 8, 9, 1003] {
+                    let mut got = vec![0i32; len];
+                    hasher.signed_indices(&keys[..len], log2_d, &mut got);
+                    for (i, &k) in keys[..len].iter().enumerate() {
+                        assert_eq!(
+                            got[i],
+                            hasher.signed_index(k, log2_d),
+                            "{id:?} log2_d={log2_d}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
