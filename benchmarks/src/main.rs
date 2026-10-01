@@ -180,8 +180,19 @@ fn main() {
     // driven from inside a one-thread pool (featurization included). The
     // all-cores rows run spellman as one single-thread replica per worker
     // (no per-execute launch cost) next to whichlang on the same pool.
-    let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("one-thread pool");
-    let all = rayon::ThreadPoolBuilder::new().num_threads(cli.threads).build().expect("worker pool");
+    // macOS schedules a default-QoS thread onto efficiency cores at will,
+    // which swings single-thread timings by ~15%; every timed thread asks
+    // for performance cores instead.
+    prefer_performance_cores();
+    let pool = |threads: usize| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .start_handler(|_| prefer_performance_cores())
+            .build()
+            .expect("worker pool")
+    };
+    let one = pool(1);
+    let all = pool(cli.threads);
     let runs = vec![
         one.install(|| run_spellman_bulk(&cli, &texts, &prepare_config(1, cli.beam), "1 thread")),
         one.install(|| run_spellman_single(&cli, &texts)),
@@ -282,6 +293,16 @@ fn score(run: &RunResult, golds: &[&str]) -> (usize, usize, usize) {
         }
     }
     (sup_rows, sup_ok, all_ok)
+}
+
+/// Ask the scheduler for performance cores (user-interactive QoS) on
+/// macOS; a no-op elsewhere.
+fn prefer_performance_cores() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: sets the calling thread's own QoS class; no pointers involved.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
+    }
 }
 
 /// A spellman prepare configuration: the heuristics' thread split and, with
