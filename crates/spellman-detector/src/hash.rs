@@ -151,7 +151,7 @@ impl FeatureHasher {
     }
 
     /// Hash one full 8-key block into signed table indices (`bucket`, or
-    /// `D+1+bucket` for negative sign — the ±P doubled-table gather layout).
+    /// `D+1+bucket` for negative sign — the encoding the JIT plans decode).
     ///
     /// The fmix32 arm is written as a flat loop of `wrapping_*` u32 ops —
     /// exactly the arithmetic [`Self::hash_u64`] performs per key, so the
@@ -182,7 +182,7 @@ impl FeatureHasher {
                 h ^= h >> 13;
                 h = h.wrapping_mul(0xC2B2_AE35);
                 h ^= h >> 16;
-                // Bucket from the high bits, sign folded into the ±P range.
+                // Bucket from the high bits, sign folded into the index.
                 idx[i] = ((h >> shift).wrapping_add((h & 1).wrapping_mul(d1))) as i32;
             }
         } else {

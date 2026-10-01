@@ -297,8 +297,16 @@ Shape specialization is the core trick:
 - **A small plan ladder over K (64 / 256 / top rung), chosen per call**
   by the longest row: the kernel does B × K work whatever the rows hold,
   so a batch of single words on a K=1024 plan was ~98% padding. The
-  ladder's plans share one realized ±P table. Fragment-level scoring
+  ladder's plans share one realized table. Fragment-level scoring
   (the `assess` word/pair/triple ladder) went from 10.8 to 0.8 µs/row.
+- **Signed hashing rides in the index** (`bucket`, or `D+1+bucket` for a
+  negative token), not in the table: the gather table is `P` alone, and a
+  materialized decode (`contiguous()`) hands the gather kernel a row and a
+  ±1 sign it multiplies in before the sum (`smlal` on NEON). The earlier
+  doubled `[P; -P]` table was twice the bytes; decoding the sign with a
+  `where` inside the gather kernel broke its fused widen-and-add (~40%
+  slower), while the materialized decode + multiply measured ~6–7% faster
+  than the doubled table end to end (M4 Max, int8).
 - **Mean-pooling, bias, softmax, argmax run host-side at read-out** (30
   floats per document): featurization already knows each document's exact
   token count, so the graph needs no count computation. The single f32
