@@ -279,7 +279,22 @@ pub fn token_keys(text: &str, cfg: &FeatureConfig) -> Vec<u64> {
 ///
 /// Emission order affects nothing observable — the model consumes the token
 /// multiset (float summation order shifts within rounding noise).
-pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
+pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, f: F) {
+    for_each_key_observed(text, cfg, f, |_| {});
+}
+
+/// [`for_each_key`] that also hands every character of `text` that can
+/// carry a script — each word's original (pre-lowercasing) characters,
+/// sentinel words included — to `observe`, so a caller can count scripts in
+/// the same walk instead of decoding the text twice. Whitespace and a
+/// stripped leading `#` are not observed; neither belongs to a script.
+#[inline]
+fn for_each_key_observed<F: FnMut(u64), O: FnMut(char)>(
+    text: &str,
+    cfg: &FeatureConfig,
+    mut f: F,
+    mut observe: O,
+) {
     // Clamped to the tag table so the per-key `N_TAG[n]` needs no check.
     let n_max = (cfg.n_max as usize).min(N_TAG.len() - 1);
     let n_min = cfg.n_min as usize;
@@ -348,11 +363,16 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
         feed(&mut r, &mut len, BOW as u64, n_min, n_max, &mut f);
         match sentinel {
             Some(s) => {
+                // The word packs as one sentinel, but its letters still
+                // count toward the text's script (an `@ник` mention is
+                // Cyrillic evidence for routing).
+                word.chars().for_each(&mut observe);
                 feed(&mut r, &mut len, s as u64, n_min, n_max, &mut f);
                 h = fnv_step(h, s as u64);
             }
             None => {
                 for c in word.chars() {
+                    observe(c);
                     match fast_lower(c) {
                         Some(lc) => {
                             feed(&mut r, &mut len, lc as u64, n_min, n_max, &mut f);
@@ -480,6 +500,11 @@ pub fn fill_signed_indices(
     out
 }
 
+thread_local! {
+    /// Per-thread packed-key buffer for the two-pass featurization.
+    static KEYS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Append every signed bucket token of `text` to `out` (no truncation):
 /// the row the detectors score, for callers that need the exact token count
 /// before choosing a plan K and that chunk long rows themselves.
@@ -495,9 +520,6 @@ pub fn push_signed_indices(
     log2_d: u32,
     out: &mut Vec<i32>,
 ) {
-    thread_local! {
-        static KEYS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
     KEYS.with_borrow_mut(|keys| {
         keys.clear();
         // ~2.7 keys per input byte on the held-out mix.
@@ -507,6 +529,34 @@ pub fn push_signed_indices(
         out.resize(start + keys.len(), 0);
         hasher.signed_indices(keys, log2_d, &mut out[start..]);
     });
+}
+
+/// [`push_signed_indices`] fused with routing: counts each character's
+/// script during the featurization walk and returns the text's
+/// [`Route`](crate::route::Route) — identical to
+/// [`route`](crate::route::route) over the same text — appending indices to
+/// `out` only when the text goes to a model (`Route::Group`). Saves the
+/// separate routing pass over the text.
+pub fn push_signed_indices_routed(
+    text: &str,
+    cfg: &FeatureConfig,
+    hasher: &crate::hash::FeatureHasher,
+    log2_d: u32,
+    out: &mut Vec<i32>,
+) -> crate::route::Route {
+    let mut scripts = crate::route::ScriptCounts::default();
+    KEYS.with_borrow_mut(|keys| {
+        keys.clear();
+        keys.reserve(text.len() * 3);
+        for_each_key_observed(text, cfg, |key| keys.push(key), |c| scripts.add(c));
+        let route = scripts.route();
+        if matches!(route, crate::route::Route::Group(_)) {
+            let start = out.len();
+            out.resize(start + keys.len(), 0);
+            hasher.signed_indices(keys, log2_d, &mut out[start..]);
+        }
+        route
+    })
 }
 
 /// Flush one full 8-key block through [`FeatureHasher::signed_index_block`],
@@ -858,6 +908,44 @@ mod tests {
         let mixed = token_keys("Привет @nick пока", &cfg1);
         let plain = token_keys("Привет @x пока", &cfg1);
         assert_eq!(mixed, plain);
+    }
+
+    #[test]
+    fn routed_featurization_matches_route_and_plain_featurization() {
+        // The fused walk must route exactly like `route(text)` — including
+        // letters inside sentinel words and case-folding expansions — and,
+        // when the text goes to a model, emit exactly push_signed_indices.
+        let cfg = FeatureConfig::default();
+        let hasher = crate::hash::FeatureHasher::default();
+        for text in [
+            "Привет, как дела?",
+            "@привет hello",
+            "@ник @nick @user",
+            "İstanbul İZMİR",
+            "#красноярск #COVID2020 #",
+            "https://t.co/xyz test@mail.ru 2020 3.5.2",
+            "Привіт hello мир",
+            "12345 !!!",
+            "",
+            "   \t ",
+            "東京駅へ行くのが好きですか",
+            "北京是中国的首都 и немного русского",
+            "नमस्ते दुनिया",
+            "مرحبا بالعالم",
+            "こんにちは　世界",
+            "Hello, Мир! Hola, mundo.",
+        ] {
+            let mut routed = Vec::new();
+            let route = push_signed_indices_routed(text, &cfg, &hasher, 17, &mut routed);
+            assert_eq!(route, crate::route::route(text), "route for {text:?}");
+            if matches!(route, crate::route::Route::Group(_)) {
+                let mut plain = Vec::new();
+                push_signed_indices(text, &cfg, &hasher, 17, &mut plain);
+                assert_eq!(routed, plain, "indices for {text:?}");
+            } else {
+                assert!(routed.is_empty(), "no indices for {text:?}");
+            }
+        }
     }
 
     #[test]

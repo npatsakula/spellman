@@ -539,34 +539,24 @@ impl BulkDetector {
         // them on top of its own (14 replicas kept ~4 cores busy).
         let inline = rayon::current_thread_index().is_some();
 
-        // Route and featurize every document in one pass: script-unique
-        // languages and letterless text resolve on the spot and never reach
-        // a plan; group-routed rows are featurized in full (no truncation),
-        // and their exact token counts pick the plan rung and drive the
-        // host-side mean-pool.
+        // Route and featurize every document in one walk over its text:
+        // script-unique languages and letterless text resolve on the spot
+        // and never reach a plan; group-routed rows are featurized in full
+        // (no truncation), and their exact token counts pick the plan rung
+        // and drive the host-side mean-pool.
         use rayon::prelude::*;
         let model = &self.model;
-        let route_one = |text: &&str| match crate::route::route(text) {
-            crate::route::Route::Direct(lang) => Err(Detection {
-                lang: Some(lang),
-                confidence: 1.0,
-                is_uncertain: false,
-            }),
-            crate::route::Route::Unknown => Err(Detection {
-                lang: None,
-                confidence: 0.0,
-                is_uncertain: true,
-            }),
-            crate::route::Route::Group(_) => {
-                let mut out = Vec::with_capacity(text.len() / 2 + 8);
-                crate::features::push_signed_indices(
-                    text,
-                    &model.features,
-                    &model.hasher,
-                    model.log2_d,
-                    &mut out,
-                );
-                Ok(out)
+        let route_one = |text: &&str| {
+            let mut out = Vec::with_capacity(text.len() / 2 + 8);
+            match crate::features::push_signed_indices_routed(
+                text,
+                &model.features,
+                &model.hasher,
+                model.log2_d,
+                &mut out,
+            ) {
+                crate::route::Route::Group(_) => Ok(out),
+                route => Err(direct_detection(route)),
             }
         };
         let routed: Vec<Result<Vec<i32>, Detection>> = if inline {
@@ -731,6 +721,23 @@ pub fn f16_to_f32(bits: u16) -> f32 {
     f32::from_bits(out)
 }
 
+/// The detection of a text routed past the model: its script-unique
+/// language, or none when it has no letters of a supported script.
+fn direct_detection(route: crate::route::Route) -> Detection {
+    match route {
+        crate::route::Route::Direct(lang) => Detection {
+            lang: Some(lang),
+            confidence: 1.0,
+            is_uncertain: false,
+        },
+        _ => Detection {
+            lang: None,
+            confidence: 0.0,
+            is_uncertain: true,
+        },
+    }
+}
+
 /// Host-side finisher shared by the JIT paths, over f32 logit sums (see
 /// [`Readout`]; chunked long documents add per-chunk sums in f32):
 /// mean-pool (÷ the token count featurization already computed), bias add,
@@ -854,27 +861,19 @@ impl SingleDetector {
     /// document score (a French opening over a Russian body reads all the
     /// way down).
     pub fn detect(&mut self, text: &str) -> Result<Detection, BulkError> {
-        match crate::route::route(text) {
-            crate::route::Route::Direct(lang) => Ok(Detection {
-                lang: Some(lang),
-                confidence: 1.0,
-                is_uncertain: false,
-            }),
-            crate::route::Route::Unknown => Ok(Detection {
-                lang: None,
-                confidence: 0.0,
-                is_uncertain: true,
-            }),
+        let model = &self.model;
+        self.ids.clear();
+        match crate::features::push_signed_indices_routed(
+            text,
+            &model.features,
+            &model.hasher,
+            model.log2_d,
+            &mut self.ids,
+        ) {
+            route @ (crate::route::Route::Direct(_) | crate::route::Route::Unknown) => {
+                Ok(direct_detection(route))
+            }
             crate::route::Route::Group(_) => {
-                let model = &self.model;
-                self.ids.clear();
-                crate::features::push_signed_indices(
-                    text,
-                    &model.features,
-                    &model.hasher,
-                    model.log2_d,
-                    &mut self.ids,
-                );
                 let pad = model.num_buckets() as i32;
                 // Smallest rung that holds the document; the top rung
                 // otherwise, chunk-accumulated.
