@@ -43,8 +43,9 @@ let mut single = SingleDetector::from_hub(1024)?;
 let d = single.detect("Съешь ещё этих мягких французских булок")?;
 
 // Bulk batches. from_hub_variant picks a storage format —
-// int8-col is 7.9 MB, f16 is 15.7 MB, same accuracy.
-let mut bulk = BulkDetector::from_hub_variant("int8-col", 1024, 512)?;
+// int8-col is 7.9 MB and scores in int8 (~1.4x faster on CPU),
+// f16 is 15.7 MB; same accuracy.
+let mut bulk = BulkDetector::from_hub_variant("int8-col", 1024, 4096)?;
 let results = bulk.detect_batch(&["Привет", "Hello"])?;
 ```
 

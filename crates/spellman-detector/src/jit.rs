@@ -90,7 +90,11 @@ impl Readout {
                 }
             }
             Readout::I32 { scales } => {
-                for (i, (o, b)) in out[..n].iter_mut().zip(scratch.as_chunks::<4>().0).enumerate() {
+                for (i, (o, b)) in out[..n]
+                    .iter_mut()
+                    .zip(scratch.as_chunks::<4>().0)
+                    .enumerate()
+                {
                     *o = i32::from_ne_bytes(*b) as f32 * scales[i % NUM_LANGS];
                 }
             }
@@ -290,6 +294,11 @@ struct Plan {
 /// the kernel scales with the box; a partial batch pays for the padded rows
 /// (all-zero gathers), which is why bulk callers should fill their batches.
 ///
+/// Larger batches are faster per document: every execute pays a fixed
+/// launch cost (~85-90 µs on a 14-thread M4 Max) that only a large batch
+/// amortizes — held-out throughput went 1.9 → 1.6 → 1.3 → 1.2 µs/sample at
+/// 512 / 1024 / 2048 / 4096 rows. 4096 is the compiled limit.
+///
 /// Device placement follows svod's loading convention: weights live on the
 /// default device at load time, so call `svod_tensor::set_default_device`
 /// before constructing if the plan should run on a GPU.
@@ -459,24 +468,50 @@ impl BulkDetector {
         }
         let pad = self.model.num_buckets() as i32;
 
-        // CPU routing: script-unique languages and letterless text never
-        // reach a plan. `rows` are the (slot, text) pairs the model scores.
-        let mut results: Vec<Detection> = Vec::with_capacity(texts.len());
-        let mut rows: Vec<(usize, &str)> = Vec::new();
-        for (slot, text) in texts.iter().enumerate() {
-            match crate::route::route(text) {
-                crate::route::Route::Direct(lang) => results.push(Detection {
+        // Route and featurize every document in one indexed rayon pass:
+        // script-unique languages and letterless text resolve on the spot
+        // and never reach a plan; group-routed rows are featurized in full
+        // (no truncation), and their exact token counts pick the plan rung
+        // and drive the host-side mean-pool. Routing used to run serially
+        // on the calling thread ahead of this pass — ~17% of a batch.
+        use rayon::prelude::*;
+        let model = &self.model;
+        let routed: Vec<Result<Vec<i32>, Detection>> = texts
+            .par_iter()
+            .map(|text| match crate::route::route(text) {
+                crate::route::Route::Direct(lang) => Err(Detection {
                     lang: Some(lang),
                     confidence: 1.0,
                     is_uncertain: false,
                 }),
-                crate::route::Route::Unknown => results.push(Detection {
+                crate::route::Route::Unknown => Err(Detection {
                     lang: None,
                     confidence: 0.0,
                     is_uncertain: true,
                 }),
                 crate::route::Route::Group(_) => {
-                    rows.push((slot, text));
+                    let mut out = Vec::with_capacity(text.len() / 2 + 8);
+                    crate::features::push_signed_indices(
+                        text,
+                        &model.features,
+                        &model.hasher,
+                        model.log2_d,
+                        &mut out,
+                    );
+                    Ok(out)
+                }
+            })
+            .collect();
+        // `rows[r]` is the result slot of `ids[r]`; every other slot is
+        // already final.
+        let mut results: Vec<Detection> = Vec::with_capacity(texts.len());
+        let mut rows: Vec<usize> = Vec::new();
+        let mut ids: Vec<Vec<i32>> = Vec::new();
+        for (slot, routed) in routed.into_iter().enumerate() {
+            match routed {
+                Ok(row) => {
+                    rows.push(slot);
+                    ids.push(row);
                     // Placeholder; overwritten after execution.
                     results.push(Detection {
                         lang: None,
@@ -484,35 +519,19 @@ impl BulkDetector {
                         is_uncertain: true,
                     });
                 }
+                Err(detection) => results.push(detection),
             }
         }
         if rows.is_empty() {
             return Ok(results);
         }
 
-        // Featurize every row in full (no truncation) — one indexed rayon
-        // task per row, so the pool splits the batch without the mutex +
-        // yield spin of a bridged iterator. The exact token counts pick the
-        // plan rung and drive the host-side mean-pool.
-        use rayon::prelude::*;
-        let model = &self.model;
-        let ids: Vec<Vec<i32>> = rows
-            .par_iter()
-            .map(|(_, text)| {
-                let mut out = Vec::with_capacity(text.len() / 2 + 8);
-                crate::features::push_signed_indices(
-                    text,
-                    &model.features,
-                    &model.hasher,
-                    model.log2_d,
-                    &mut out,
-                );
-                out
-            })
-            .collect();
-
         // Smallest rung that holds the longest row; the top rung otherwise
-        // (its overflow is chunk-accumulated below).
+        // (its overflow is chunk-accumulated below). Fewer, fuller executes
+        // beat tighter padding: padding gathers the cached all-zero row, while
+        // every execute pays a fixed launch cost (~85-90 µs on a 14-thread
+        // M4 Max) — a padding-minimizing rung choice that ran ~6x more
+        // executes measured 3.8 vs 2.1 µs/sample.
         let longest = ids.iter().map(Vec::len).max().unwrap_or(0);
         let plan_idx = self
             .plans
@@ -582,7 +601,7 @@ impl BulkDetector {
         }
 
         // Mean-pool (÷ the exact token count), bias, softmax, argmax, θ.
-        for (r, &(slot, _)) in rows.iter().enumerate() {
+        for (r, &slot) in rows.iter().enumerate() {
             results[slot] = pooled_to_detection(
                 &sums[r],
                 ids[r].len() as u32,

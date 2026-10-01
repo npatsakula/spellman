@@ -18,7 +18,7 @@ let d = single.detect("Съешь ещё этих мягких французс�
 
 // Bulk batches — constant K, rebindable batch, rayon featurization written
 // zero-copy straight into the plan's input buffer.
-let mut bulk = BulkDetector::from_hub_variant("int8-col", 1024, 512)?;
+let mut bulk = BulkDetector::from_hub_variant("int8-col", 1024, 4096)?;
 let results = bulk.detect_batch(&["Привет", "Hello"])?;
 ```
 
