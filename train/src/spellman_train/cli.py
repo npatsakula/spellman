@@ -43,7 +43,7 @@ COMMANDS = [
     ("mix", mix, "build the training dataset (parquet shards + manifest.json)"),
     ("train", train, "train the model and export folded artifacts"),
     ("eval-fasttext", eval_fasttext, "fastText/GlotLID baseline over eval TSVs"),
-    ("quantize", quantize_eval, "rewrite a model artifact in a quantized store"),
+    ("quantize", quantize_eval, "convert an older model artifact to the int8-col runtime format"),
     ("gen-fixtures", gen_fixtures, "regenerate the Rust<->Python parity fixture"),
     ("prepare-apertium", prepare_apertium, "build lttoolbox analyzers (mkd)"),
     ("publish", publish, "upload dataset/model to the Hugging Face Hub"),

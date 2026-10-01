@@ -42,10 +42,8 @@ use spellman_detector::{BulkDetector, SingleDetector};
 let mut single = SingleDetector::from_hub(1024)?;
 let d = single.detect("Съешь ещё этих мягких французских булок")?;
 
-// Bulk batches. from_hub_variant picks a storage format —
-// int8-col is 7.9 MB and scores in int8 (~1.4x faster on CPU),
-// f16 is 15.7 MB; same accuracy.
-let mut bulk = BulkDetector::from_hub_variant("int8-col", 1024, 4096)?;
+// Bulk batches.
+let mut bulk = BulkDetector::from_hub(1024, 4096)?;
 let results = bulk.detect_batch(&["Привет", "Hello"])?;
 ```
 
@@ -96,8 +94,7 @@ fastText-class models and ~60× faster than lingua (one thread each).
 
 ## Speed
 
-Apple M4 Max, the `int8-col` model (scored in int8; the f16-computed
-path is not tuned and runs slower), BEAM=16, µs per document:
+Apple M4 Max, BEAM=16, µs per document:
 
 | | Tatoeba sentences | held-out mix |
 |---|---|---|

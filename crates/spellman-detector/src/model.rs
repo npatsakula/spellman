@@ -4,14 +4,19 @@
 //! - `model.json` — the runtime contract: language inventory (column order),
 //!   bucket count, hash id/seed, n-gram config, confidence threshold, and
 //!   the storage-quantization spec;
-//! - `model.safetensors` — `P` (folded score table, `[D+1, NUM_LANGS]`) and
-//!   `bias` (`[NUM_LANGS]`), plus a `scales` tensor when `P` is stored
-//!   quantized. Storage precision (`float16` | `int8` | `fp8e4m3`, scaled
-//!   per row or per column) is decoupled from compute: the loader always
-//!   reconstructs the full table, so everything downstream sees one
-//!   canonical representation. These two are everything the runtime
-//!   computes with; the unfused `E` / `W` are training-side state and are
-//!   not shipped.
+//! - `model.safetensors` — `P` (folded score table, `[D+1, NUM_LANGS]`) as
+//!   int8 with one f32 scale per language column (`scales`, `[NUM_LANGS]`),
+//!   and `bias` (`[NUM_LANGS]`). The runtime scores the int8 table
+//!   directly: column scales factor out of the token sum
+//!   (`Σ s_c·q = s_c·Σ q`), so it is applied once per document at
+//!   read-out. These are everything the runtime computes with; the unfused
+//!   `E` / `W` are training-side state and are not shipped.
+//!
+//! int8 with per-column scales is the only supported storage: it matched
+//! f16 accuracy on every eval (within ±0.02pp) at half the size and ran
+//! faster on every path measured, so f16, row-scaled int8 and fp8 artifacts
+//! — which could only be scored through a slower dequantized f16 path —
+//! were dropped. They are rejected at load with a re-export hint.
 //!
 //! `P` is the algebraic fold of the trained model: scores are
 //! `mean(E[token]) · W`, and because the head is linear this equals
@@ -27,16 +32,16 @@ use crate::features::FeatureConfig;
 use crate::hash::{FeatureHasher, HashId};
 use spellman_language::{Lang, NUM_LANGS};
 
-/// Storage quantization of `P`: how the table (and its `scales` tensor) are
-/// encoded in `model.safetensors. `float16` + `none` is the unquantized
-/// artifact (no `scales`); `row` scales are per bucket row, `column` scales
-/// are per language column.
+/// Storage quantization of `P` as recorded in `model.json`. The runtime
+/// accepts only `int8` + `column`; the defaults describe the unquantized
+/// artifacts older exports wrote without a `quant` block, so those load as
+/// a clear rejection rather than a parse error.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QuantSpec {
-    /// `float16` | `int8` | `fp8e4m3`.
+    /// Element type of the stored `P`; must be `int8`.
     #[serde(default = "default_dtype")]
     pub dtype: String,
-    /// `none` | `row` | `column`.
+    /// Scale granularity; must be `column` (one scale per language).
     #[serde(default = "default_scheme")]
     pub scheme: String,
 }
@@ -100,8 +105,8 @@ pub struct ModelMetadata {
 #[derive(Clone, Debug)]
 pub struct Model {
     pub metadata: ModelMetadata,
-    /// Folded table `[D+1][NUM_LANGS]`, row-major.
-    pub table: Vec<f32>,
+    /// The folded table as stored: int8 values and per-column scales.
+    pub table: ColumnInt8,
     /// Per-language bias.
     pub bias: Vec<f32>,
     /// Derived: number of buckets `D = 2^log2_d`; the padding row sits at
@@ -109,11 +114,6 @@ pub struct Model {
     pub log2_d: u32,
     pub features: FeatureConfig,
     pub hasher: FeatureHasher,
-    /// The stored int8 table and its per-column scales, kept only for
-    /// `int8`/`column` artifacts: column scales factor out of the K-sum
-    /// (`Σ s_c·q = s_c·Σ q`), so these artifacts can be scored in int8
-    /// without dequantizing — see [`crate::jit::SpellmanModel::from_int8_columns`].
-    pub int8_columns: Option<ColumnInt8>,
 }
 
 /// An int8 folded table with per-language-column scales.
@@ -170,8 +170,8 @@ impl Model {
     ///
     /// Weights are placed on the **default device at load time** — call
     /// `svod_tensor::set_default_device` first if the model should live on a
-    /// GPU. The JIT table is built from the same resolved host table via
-    /// [`crate::jit::SpellmanModel::from_table`].
+    /// GPU. The JIT table is built from it via
+    /// [`crate::jit::SpellmanModel::from_model`].
     pub fn load(dir: &Path) -> Result<Model, ModelError> {
         let metadata = read_metadata(dir)?;
         let sd = svod_model::state::load_safetensors_dir(dir).context(StateSnafu)?;
@@ -184,16 +184,8 @@ impl Model {
         metadata: ModelMetadata,
     ) -> Result<Model, ModelError> {
         Self::validate(&metadata)?;
-        let (p, bias, int8_columns) = resolve_table(sd, &metadata)?;
-
-        let d = 1usize << metadata.log2_d;
-        if p.len() != (d + 1) * NUM_LANGS {
-            return Err(ModelError::ShapeMismatch {
-                name: "P".into(),
-                expected: (d + 1) * NUM_LANGS,
-                actual: p.len(),
-            });
-        }
+        let table = read_table(sd, metadata.log2_d)?;
+        let bias = read_cast_f32(sd, "bias")?;
         if bias.len() != NUM_LANGS {
             return Err(ModelError::ShapeMismatch {
                 name: "bias".into(),
@@ -216,12 +208,11 @@ impl Model {
         let log2_d = metadata.log2_d;
         Ok(Model {
             metadata,
-            table: p,
+            table,
             bias,
             log2_d,
             features,
             hasher,
-            int8_columns,
         })
     }
 
@@ -268,21 +259,16 @@ impl Model {
                 message: format!("log2_d out of range: {}", metadata.log2_d),
             });
         }
-        let legal_quant = matches!(
-            (
-                metadata.quant.dtype.as_str(),
-                metadata.quant.scheme.as_str()
-            ),
-            ("float16", "none")
-                | ("int8", "row")
-                | ("int8", "column")
-                | ("fp8e4m3", "row")
-                | ("fp8e4m3", "column")
-        );
-        if !legal_quant {
+        if (
+            metadata.quant.dtype.as_str(),
+            metadata.quant.scheme.as_str(),
+        ) != ("int8", "column")
+        {
             return Err(ModelError::Metadata {
                 message: format!(
-                    "unsupported quant spec: {}/{}",
+                    "unsupported weight storage {}/{}: this runtime scores int8 with \
+                     per-column scales (int8-col); convert the artifact with \
+                     `spellman-train quantize --model <dir> --out <dir>`",
                     metadata.quant.dtype, metadata.quant.scheme
                 ),
             });
@@ -291,82 +277,35 @@ impl Model {
     }
 }
 
-/// `(table, bias, int8 columns)` as [`resolve_table`] returns them.
-type ResolvedTable = (Vec<f32>, Vec<f32>, Option<ColumnInt8>);
-
-/// Reconstruct the canonical f32 folded table and bias from a state dict,
-/// whatever the storage precision. This is the single place that knows
-/// about quantization; every downstream consumer (host scorer, JIT table)
-/// sees the resolved representation. `int8`/`column` artifacts also hand
-/// back their stored values and scales for int8 scoring.
-fn resolve_table(
-    sd: &svod_model::state::StateDict,
-    metadata: &ModelMetadata,
-) -> Result<ResolvedTable, ModelError> {
-    let d = 1usize << metadata.log2_d;
-    let bias = read_cast_f32(sd, "bias")?;
-    let mut int8_columns = None;
-
-    let mut table = match (
-        metadata.quant.dtype.as_str(),
-        metadata.quant.scheme.as_str(),
-    ) {
-        ("float16", "none") => read_cast_f32(sd, "P")?,
-        (dtype @ ("int8" | "fp8e4m3"), scheme @ ("row" | "column")) => {
-            let per_row = scheme == "row";
-            let expected_scales = if per_row { d + 1 } else { NUM_LANGS };
-            let scales = read_cast_f32(sd, "scales")?;
-            if scales.len() != expected_scales {
-                return Err(ModelError::ShapeMismatch {
-                    name: "scales".into(),
-                    expected: expected_scales,
-                    actual: scales.len(),
-                });
-            }
-            let values: Vec<f32> = if dtype == "int8" {
-                let mut q = read_i8(sd, "P")?;
-                let values = q.iter().map(|&v| f32::from(v)).collect();
-                if !per_row && q.len() == (d + 1) * NUM_LANGS {
-                    q[d * NUM_LANGS..].fill(0);
-                    int8_columns = Some(ColumnInt8 {
-                        q,
-                        scales: scales.clone(),
-                    });
-                }
-                values
-            } else {
-                read_u8(sd, "P")?.iter().map(|&b| e4m3_to_f32(b)).collect()
-            };
-            values
-                .into_iter()
-                .enumerate()
-                .map(|(i, v)| {
-                    v * scales[if per_row {
-                        i / NUM_LANGS
-                    } else {
-                        i % NUM_LANGS
-                    }]
-                })
-                .collect()
-        }
-        _ => unreachable!("validate() rejects every other combination"),
-    };
-
-    // The padding row D is part of the contract (all-zero); enforce it
-    // regardless of what rounding did (the int8 copy above is zeroed the
-    // same way).
-    for c in 0..NUM_LANGS {
-        table[d * NUM_LANGS + c] = 0.0;
+/// Read the stored int8 table and its per-column scales, checking both
+/// shapes. The padding row `D` is part of the contract (all-zero) and is
+/// enforced here whatever the export wrote.
+fn read_table(sd: &svod_model::state::StateDict, log2_d: u32) -> Result<ColumnInt8, ModelError> {
+    let d = 1usize << log2_d;
+    let mut q = read_i8(sd, "P")?;
+    if q.len() != (d + 1) * NUM_LANGS {
+        return Err(ModelError::ShapeMismatch {
+            name: "P".into(),
+            expected: (d + 1) * NUM_LANGS,
+            actual: q.len(),
+        });
     }
-    Ok((table, bias, int8_columns))
+    q[d * NUM_LANGS..].fill(0);
+    let scales = read_cast_f32(sd, "scales")?;
+    if scales.len() != NUM_LANGS {
+        return Err(ModelError::ShapeMismatch {
+            name: "scales".into(),
+            expected: NUM_LANGS,
+            actual: scales.len(),
+        });
+    }
+    Ok(ColumnInt8 { q, scales })
 }
 
-/// Read a tensor as host f32 values (f16 and f32 storage both legal on the
-/// cast lattice; quantized artifacts store `bias`/`scales` in f32 anyway).
-/// The cast must happen before `realize()` — casting a realized tensor
-/// yields a lazy child with no buffer. Host readout genuinely must
-/// materialize (these values never enter a graph); the JIT table path uses
-/// `.contiguous()` boundaries instead, see `jit::SpellmanModel::from_table`.
+/// Read a tensor as host f32 values (`bias` and `scales`; f16 and f32
+/// storage are both legal on the cast lattice). The cast must happen before
+/// `realize()` — casting a realized tensor yields a lazy child with no
+/// buffer.
 fn read_cast_f32(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<f32>, ModelError> {
     let tensor = sd
         .get(name)
@@ -388,36 +327,6 @@ fn read_i8(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<i8>, Mod
         })?;
     tensor.realize().context(TensorSnafu)?;
     tensor.as_vec::<i8>().context(TensorSnafu)
-}
-
-fn read_u8(sd: &svod_model::state::StateDict, name: &str) -> Result<Vec<u8>, ModelError> {
-    let tensor = sd
-        .get(name)
-        .cloned()
-        .ok_or_else(|| ModelError::MissingTensor {
-            name: name.to_owned(),
-        })?;
-    tensor.realize().context(TensorSnafu)?;
-    tensor.as_vec::<u8>().context(TensorSnafu)
-}
-
-/// Decode an FP8 E4M3FN value (OCP flavor: 4-bit exponent, bias 7, 3-bit
-/// mantissa, no infinities, max finite 448, `S.1111.111` = NaN) to f32.
-/// The `fp8e4m3` storage format packs these bits as raw u8.
-pub fn e4m3_to_f32(bits: u8) -> f32 {
-    let sign = u32::from(bits >> 7) << 31;
-    let exp = u32::from((bits >> 3) & 0xF);
-    let man = u32::from(bits & 0x7);
-    match (exp, man) {
-        (0, 0) => f32::from_bits(sign), // ±0
-        (0, _) => {
-            // Subnormal: mantissa × 2^-9.
-            let mag = (man as f32) * f32::from_bits(0x3B00_0000); // 2^-9
-            if sign != 0 { -mag } else { mag }
-        }
-        (0xF, 0x7) => f32::NAN,
-        _ => f32::from_bits(sign | ((exp + 120) << 23) | (man << 20)),
-    }
 }
 
 /// Read and validate `model.json` from a model directory.
@@ -443,47 +352,17 @@ pub fn read_metadata(dir: &Path) -> Result<ModelMetadata, ModelError> {
 pub(crate) mod test_support {
     use super::*;
 
-    pub fn write_test_model(dir: &std::path::Path) {
+    /// The fixture's folded table before quantization: Russian (column 0)
+    /// and English (column 21) told apart by bucket 0.
+    fn fixture_table() -> Vec<f32> {
         let d = 1usize << 12;
         let mut table = vec![0.0f32; (d + 1) * NUM_LANGS];
-        // Distinguish Russian (column 0) from English (column 21) via bucket 0.
         table[0] = 5.0; // rus
         table[21] = -5.0; // eng
-        let bias = vec![0.0f32; NUM_LANGS];
-        let meta = fixture_metadata();
-        std::fs::write(
-            dir.join("model.json"),
-            serde_json::to_string(&meta).unwrap(),
-        )
-        .unwrap();
-        safetensors::serialize_to_file(
-            vec![
-                (
-                    "P",
-                    safetensors::tensor::TensorView::new(
-                        safetensors::Dtype::F32,
-                        vec![d + 1, NUM_LANGS],
-                        bytemuck::cast_slice(&table),
-                    )
-                    .unwrap(),
-                ),
-                (
-                    "bias",
-                    safetensors::tensor::TensorView::new(
-                        safetensors::Dtype::F32,
-                        vec![NUM_LANGS],
-                        bytemuck::cast_slice(&bias),
-                    )
-                    .unwrap(),
-                ),
-            ],
-            None,
-            &dir.join("model.safetensors"),
-        )
-        .unwrap();
+        table
     }
 
-    /// The metadata half of the fixture (shared by the f16 and int8 writers).
+    /// The metadata half of the fixture.
     pub fn fixture_metadata() -> ModelMetadata {
         ModelMetadata {
             format: "spellman-model".into(),
@@ -497,30 +376,20 @@ pub(crate) mod test_support {
             n_min: 1,
             n_max: 3,
             theta: 0.3,
-            quant: QuantSpec::default(),
+            quant: QuantSpec {
+                dtype: "int8".into(),
+                scheme: "column".into(),
+            },
         }
     }
 
-    /// int8 variant of the fixture: quantizes the same synthetic table with
-    /// the given scheme and stores i8 `P` + f32 `scales` + the quant spec.
-    pub fn write_int8_model(dir: &std::path::Path, scheme: &str) {
-        let d = 1usize << 12;
-        let mut table = vec![0.0f32; (d + 1) * NUM_LANGS];
-        table[0] = 5.0; // rus
-        table[21] = -5.0; // eng
-        let per_row = scheme == "row";
-        let scale_index = |i: usize| {
-            if per_row {
-                i / NUM_LANGS
-            } else {
-                i % NUM_LANGS
-            }
-        };
-        let n_scales = if per_row { d + 1 } else { NUM_LANGS };
-
-        let mut scales = vec![0.0f32; n_scales];
+    /// Write the fixture as the runtime's storage format: i8 `P` with f32
+    /// per-column `scales` (symmetric, max-abs / 127).
+    pub fn write_test_model(dir: &std::path::Path) {
+        let table = fixture_table();
+        let mut scales = vec![0.0f32; NUM_LANGS];
         for (i, v) in table.iter().enumerate() {
-            let s = &mut scales[scale_index(i)];
+            let s = &mut scales[i % NUM_LANGS];
             *s = s.max(v.abs());
         }
         for s in &mut scales {
@@ -529,20 +398,12 @@ pub(crate) mod test_support {
         let q: Vec<i8> = table
             .iter()
             .enumerate()
-            .map(|(i, v)| (v / scales[scale_index(i)]).round().clamp(-127.0, 127.0) as i8)
+            .map(|(i, v)| (v / scales[i % NUM_LANGS]).round().clamp(-127.0, 127.0) as i8)
             .collect();
         let bias = vec![0.0f32; NUM_LANGS];
-        let meta = ModelMetadata {
-            quant: QuantSpec {
-                dtype: "int8".into(),
-                scheme: scheme.into(),
-            },
-            ..fixture_metadata()
-        };
-
         std::fs::write(
             dir.join("model.json"),
-            serde_json::to_string(&meta).unwrap(),
+            serde_json::to_string(&fixture_metadata()).unwrap(),
         )
         .unwrap();
         fn view<'a>(
@@ -561,7 +422,7 @@ pub(crate) mod test_support {
                 view(
                     "P",
                     safetensors::Dtype::I8,
-                    vec![d + 1, NUM_LANGS],
+                    vec![table.len() / NUM_LANGS, NUM_LANGS],
                     bytemuck::cast_slice(&q),
                 ),
                 view(
@@ -573,7 +434,7 @@ pub(crate) mod test_support {
                 view(
                     "scales",
                     safetensors::Dtype::F32,
-                    vec![n_scales],
+                    vec![NUM_LANGS],
                     bytemuck::cast_slice(&scales),
                 ),
             ],
@@ -588,6 +449,14 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
 
+    fn rewrite_metadata(dir: &std::path::Path, edit: impl FnOnce(&mut ModelMetadata)) {
+        let meta_path = dir.join("model.json");
+        let mut meta: ModelMetadata =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        edit(&mut meta);
+        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+    }
+
     #[test]
     fn loads_and_validates() {
         let tmp = tempfile::tempdir().unwrap();
@@ -597,91 +466,72 @@ mod tests {
         assert_eq!(model.pad_index(), 4096);
         assert_eq!(model.hasher.id, HashId::Fmix32);
         assert_eq!(model.features.n_max, 3);
-        assert_eq!(model.table.len(), 4097 * NUM_LANGS);
-        assert_eq!(model.table[0], 5.0);
-        assert_eq!(model.table[21], -5.0);
+        assert_eq!(model.table.q.len(), 4097 * NUM_LANGS);
+        // The two nonzero cells are their own column maxima: ±127 × 5/127.
+        assert_eq!((model.table.q[0], model.table.q[21]), (127, -127));
+        assert!((f32::from(model.table.q[0]) * model.table.scales[0] - 5.0).abs() < 1e-5);
+        assert!((f32::from(model.table.q[21]) * model.table.scales[21] + 5.0).abs() < 1e-5);
+        // The padding row is all-zero.
+        assert!(model.table.q[4096 * NUM_LANGS..].iter().all(|&v| v == 0));
     }
 
     #[test]
     fn rejects_wrong_inventory() {
         let tmp = tempfile::tempdir().unwrap();
         test_support::write_test_model(tmp.path());
-        let meta_path = tmp.path().join("model.json");
-        let mut meta: ModelMetadata =
-            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
-        meta.languages.reverse();
-        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+        rewrite_metadata(tmp.path(), |meta| meta.languages.reverse());
         assert!(Model::load(tmp.path()).is_err());
     }
 
     #[test]
-    fn loads_int8_quantized_artifacts() {
-        for scheme in ["row", "column"] {
+    fn rejects_every_storage_but_int8_column() {
+        // f16, row-scaled int8 and fp8 artifacts — and older exports with no
+        // `quant` block at all — fail with the re-export hint, before any
+        // tensor is read.
+        for (dtype, scheme) in [
+            ("float16", "none"),
+            ("int8", "row"),
+            ("fp8e4m3", "row"),
+            ("fp8e4m3", "column"),
+            ("int8", "banana"),
+        ] {
             let tmp = tempfile::tempdir().unwrap();
-            test_support::write_int8_model(tmp.path(), scheme);
-            let model = Model::load(tmp.path()).expect("int8/{scheme} artifact loads");
-            let d = model.num_buckets() as usize;
-            // The two nonzero cells are their own column/row maxima, so they
-            // quantize to ±127 and come back to ±5 up to f32 rounding.
-            assert!((model.table[0] - 5.0).abs() < 1e-4);
-            assert!((model.table[21] + 5.0).abs() < 1e-4);
-            // Padding row must be exactly zero through any storage format.
-            assert!(model.table[d * NUM_LANGS..].iter().all(|v| *v == 0.0));
+            test_support::write_test_model(tmp.path());
+            rewrite_metadata(tmp.path(), |meta| {
+                meta.quant = QuantSpec {
+                    dtype: dtype.into(),
+                    scheme: scheme.into(),
+                };
+            });
+            let err = Model::load(tmp.path()).unwrap_err().to_string();
+            assert!(
+                err.contains("spellman-train quantize"),
+                "{dtype}/{scheme}: {err}"
+            );
         }
+        let tmp = tempfile::tempdir().unwrap();
+        test_support::write_test_model(tmp.path());
+        let meta_path = tmp.path().join("model.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("quant");
+        std::fs::write(&meta_path, json.to_string()).unwrap();
+        let err = Model::load(tmp.path()).unwrap_err().to_string();
+        assert!(err.contains("float16/none"), "no quant block: {err}");
     }
 
     #[test]
     fn rejects_version_2_model() {
         let tmp = tempfile::tempdir().unwrap();
         test_support::write_test_model(tmp.path());
-        let meta_path = tmp.path().join("model.json");
-        let mut meta: ModelMetadata =
-            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
-        meta.version = 2;
-        meta.lexical = false;
-        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+        rewrite_metadata(tmp.path(), |meta| {
+            meta.version = 2;
+            meta.lexical = false;
+        });
         let err = Model::load(tmp.path()).unwrap_err();
         assert!(err.to_string().contains("version 3"), "got: {err}");
         // A v3 artifact without the lexical flag is equally rejected.
-        meta.version = 3;
-        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+        rewrite_metadata(tmp.path(), |meta| meta.version = 3);
         assert!(Model::load(tmp.path()).is_err());
-    }
-
-    #[test]
-    fn rejects_unknown_quant_spec() {
-        let tmp = tempfile::tempdir().unwrap();
-        test_support::write_int8_model(tmp.path(), "row");
-        let meta_path = tmp.path().join("model.json");
-        let mut meta: ModelMetadata =
-            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
-        meta.quant.scheme = "banana".into();
-        std::fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
-        assert!(Model::load(tmp.path()).is_err());
-    }
-
-    #[test]
-    fn e4m3_decode_reference_values() {
-        assert_eq!(e4m3_to_f32(0x00), 0.0);
-        assert_eq!(e4m3_to_f32(0x80), -0.0);
-        assert_eq!(e4m3_to_f32(0x38), 1.0);
-        assert_eq!(e4m3_to_f32(0xB8), -1.0);
-        assert_eq!(e4m3_to_f32(0x3C), 1.5);
-        assert_eq!(e4m3_to_f32(0x40), 2.0);
-        assert_eq!(e4m3_to_f32(0x70), 128.0);
-        assert_eq!(e4m3_to_f32(0x7E), 448.0); // max finite (e4m3fn has no inf)
-        assert_eq!(e4m3_to_f32(0x01), 0.001953125); // subnormal: 1 × 2^-9
-        assert_eq!(e4m3_to_f32(0x03), 0.005859375); // 3 × 2^-9
-        assert_eq!(e4m3_to_f32(0x08), 0.015625); // smallest normal: 2^-6
-        assert!(e4m3_to_f32(0x7F).is_nan());
-        // Monotone across the positive normal range.
-        let mut prev = 0.0f32;
-        let mut bits = 0x08u8; // smallest normal, 2^-6
-        while bits < 0x7E {
-            let v = e4m3_to_f32(bits);
-            assert!(v >= prev, "not monotone at {bits:#04x}");
-            prev = v;
-            bits += 1;
-        }
     }
 }

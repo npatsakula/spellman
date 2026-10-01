@@ -35,7 +35,7 @@ from spellman_train.features import (
     token_keys,
 )
 from spellman_train.paths import MODEL_DIR, TRAIN_DIR
-from spellman_train.quantize import dequantize, parse_store, quantize, stats
+from spellman_train.quantize import dequantize, quantize_int8_col, stats
 
 
 LANG_TO_IDX = {code: i for i, code in enumerate(LANGUAGES)}
@@ -223,39 +223,33 @@ def table_accuracy(p: np.ndarray, bias: np.ndarray, tensors: tuple, batch: int =
     return correct / len(y)
 
 
-def export(model: SpellmanNet, cfg: Config, theta: float, out_dir: Path, store: str, max_drop: float, val_t: tuple) -> None:
+def export(model: SpellmanNet, cfg: Config, theta: float, out_dir: Path, max_drop: float, val_t: tuple) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     emb = model.emb.weight.detach().cpu().numpy()  # [D+1, dim]
     w = model.head.weight.detach().cpu().numpy()  # [C, dim]
     b = model.head.bias.detach().cpu().numpy()  # [C]
 
-    # Train in f32, export in f16: the runtime paths are f16-native (ARM
-    # NEON / GPU), the fold is rounded once here, and validation showed no
-    # prediction flips from the rounding.
+    # Train in f32, fold once and round to f16 (validation showed no
+    # prediction flips from the rounding); the int8 table is quantized from
+    # that fold, so the gate measures exactly what ships.
     p16 = (emb @ w.T).astype(np.float16)  # [D+1, C]
     p16[-1, :] = 0  # keep the padding row exactly zero after rounding
 
-    # Storage precision is decoupled from compute: the loader dequantizes
-    # any format back into the same table. The gate below refuses to ship a
-    # scheme that costs more than --quant-max-drop validation accuracy.
-    dtype, scheme = parse_store(store)
-    stored, scales = (p16, None) if dtype == "float16" else quantize(p16, dtype, scheme)
-    if dtype != "float16":
-        base_acc = table_accuracy(p16.astype(np.float32), b, val_t)
-        deq = dequantize(stored, scales, dtype, scheme)
-        deq[-1, :] = 0
-        quant_acc = table_accuracy(deq, b, val_t)
-        drop_pp = 100.0 * (base_acc - quant_acc)
-        print(f"quantization gate ({store}): val acc {base_acc:.4f} -> {quant_acc:.4f} ({drop_pp:+.2f}pp)")
-        print("  " + stats(p16, stored, scales, dtype, scheme))
-        if drop_pp > max_drop:
-            raise SystemExit(
-                f"quantization drop {drop_pp:+.2f}pp exceeds --quant-max-drop {max_drop:.2f}pp; pick another --store"
-            )
+    # The runtime's one storage format: int8 with per-column scales. The
+    # gate refuses to ship a table that costs more than --quant-max-drop
+    # validation accuracy against the f16 fold.
+    stored, scales = quantize_int8_col(p16)
+    base_acc = table_accuracy(p16.astype(np.float32), b, val_t)
+    deq = dequantize(stored, scales, "int8", "column")
+    deq[-1, :] = 0
+    quant_acc = table_accuracy(deq, b, val_t)
+    drop_pp = 100.0 * (base_acc - quant_acc)
+    print(f"quantization gate (int8-col): val acc {base_acc:.4f} -> {quant_acc:.4f} ({drop_pp:+.2f}pp)")
+    print("  " + stats(p16, stored, scales))
+    if drop_pp > max_drop:
+        raise SystemExit(f"quantization drop {drop_pp:+.2f}pp exceeds --quant-max-drop {max_drop:.2f}pp")
 
-    tensors_out = {"P": stored, "bias": b.astype(np.float16)}
-    if scales is not None:
-        tensors_out["scales"] = scales
+    tensors_out = {"P": stored, "bias": b.astype(np.float16), "scales": scales}
     save_file(tensors_out, str(out_dir / "model.safetensors"))
     meta = {
         "format": "spellman-model",
@@ -269,10 +263,10 @@ def export(model: SpellmanNet, cfg: Config, theta: float, out_dir: Path, store: 
         "n_min": 1,
         "n_max": 5,
         "theta": theta,
-        "quant": {"dtype": dtype, "scheme": scheme},
+        "quant": {"dtype": "int8", "scheme": "column"},
     }
     (out_dir / "model.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
-    print(f"exported model to {out_dir} (theta={theta:.3f}, store={store})")
+    print(f"exported model to {out_dir} (theta={theta:.3f}, int8-col)")
 
 
 def write_eval_tsv(rows: list[dict], path: Path) -> None:
@@ -306,17 +300,11 @@ def populate(ap: argparse.ArgumentParser) -> None:
         "for the partial eval batches)",
     )
     ap.add_argument(
-        "--store",
-        default="f16",
-        choices=["f16", "int8-row", "int8-col", "fp8-row", "fp8-col"],
-        help="folded-table storage format (int8/fp8 halve the artifact; the "
-        "loader dequantizes, the runtime graph is unchanged)",
-    )
-    ap.add_argument(
         "--quant-max-drop",
         type=float,
         default=0.2,
-        help="max tolerated validation-accuracy drop (percentage points) for quantized --store",
+        help="max tolerated validation-accuracy drop (percentage points) of the "
+        "exported int8 table against the f16 fold",
     )
 
 
@@ -382,7 +370,7 @@ def run(args: argparse.Namespace) -> None:
     _, val_confs = evaluate(raw, val_t, cfg.batch_size)
     theta = float(np.percentile(val_confs, 5))
 
-    export(raw, cfg, theta, args.out, args.store, args.quant_max_drop, val_t)
+    export(raw, cfg, theta, args.out, args.quant_max_drop, val_t)
     write_eval_tsv(test_rows, args.out / "eval_test.tsv")
     write_eval_tsv(val_rows, args.out / "eval_val.tsv")
     print("wrote eval_test.tsv / eval_val.tsv (feed to `cargo run --release --bin assess`)")

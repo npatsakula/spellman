@@ -1,15 +1,14 @@
 //! Bulk batched detection as a compiled svod execution plan.
 //!
-//! The graph is deliberately minimal — gather and one reduction, pure fp16
-//! end to end (ARM/NEON native on Apple Silicon; no cast kernels in the
-//! replayed graph; f32 conversion happens once at host read-out):
+//! The graph is deliberately minimal — an int8 gather and one reduction,
+//! accumulated exactly in i32; the per-column scales, mean-pooling (÷ token
+//! count) and the bias add run host-side at read-out:
 //!
 //! ```text
-//! idx [b, K] i32 ──gather──> table rows [b, K, C] f16 ──sum over K──> [b, C] f16
+//! idx [b, K] i32 ──gather──> table rows [b, K, C] i8 ──sum over K──> [b, C] i32
 //! ```
 //!
-//! Mean-pooling (÷ token count) and the bias add run host-side at read-out:
-//! featurization already knows each document's exact token count, so the
+//! Featurization already knows each document's exact token count, so the
 //! graph needs no count computation at all.
 //!
 //! `K` (tokens per document, zero-padded) and the batch size are both baked
@@ -20,11 +19,11 @@
 //! longest row; [`SingleDetector`] is the `B = 1` special case.
 //!
 //! Signed hashing is folded into the table layout: the gather table is
-//! `[2*(D+1), C]` with rows `0..=D` equal to `P` and rows `D+1..=2D+1` equal
-//! to `-P`, so a token's sign selects the row block and the graph needs no
+//! `[2*(D+1), C]` with rows `0..=D` equal to `q` and rows `D+1..=2D+1` equal
+//! to `-q`, so a token's sign selects the row block and the graph needs no
 //! multiplies. The padding row lives at index `D` (all-zero) in both blocks.
 
-// svod's tensor/jit `Result` types cross this module's API (from_table,
+// svod's tensor/jit `Result` types cross this module's API (from_model,
 // forward_batch, the jit_wrapper build closure); they are svod-owned and
 // boxed as soon as BulkError takes over.
 #![allow(clippy::result_large_err)]
@@ -42,10 +41,9 @@ use crate::model::Model;
 
 /// Columns of the gather table: `NUM_LANGS` rounded up to 32, the trailing
 /// columns all-zero. A 30-wide int8 row straddles two 64-byte cache lines
-/// at 14 of 16 offsets; a 32-wide one never does (one line per gathered
-/// int8 row, two aligned for fp16) — ~10-16% faster single-thread kernel
-/// (M4 Max, int8). The plan's row-sums keep this width; read-out drops the
-/// padding.
+/// at 14 of 16 offsets; a 32-wide one never does — ~10-16% faster
+/// single-thread kernel (M4 Max). The plan's row-sums keep this width;
+/// read-out drops the padding.
 pub const TABLE_COLS: usize = NUM_LANGS.next_multiple_of(32);
 
 /// Copy `[rows, NUM_LANGS]` row-major values into `[rows, TABLE_COLS]`,
@@ -67,8 +65,7 @@ fn pad_columns<T: Copy + Default>(values: &[T]) -> Vec<T> {
 /// Cloning shares the table.
 #[derive(Clone)]
 pub struct SpellmanModel {
-    /// `[2*(D+1), TABLE_COLS]` — `P` block then `-P` block: fp16, or int8
-    /// for column-quantized artifacts.
+    /// `[2*(D+1), TABLE_COLS]` int8 — the `q` block then the `-q` block.
     table: Tensor,
     /// Row count of `table`, `2*(D+1)`: the bound the gather indices are
     /// clamped to (see [`Self::forward_batch`]).
@@ -77,28 +74,18 @@ pub struct SpellmanModel {
     readout: Readout,
 }
 
-/// Element type of the plan's `[b, C]` row-sums and how to widen them.
+/// Widens the plan's `[b, TABLE_COLS]` i32 row-sums to f32 logit sums: the
+/// i8 sum is exact in i32, and each language column's scale factors out of
+/// it (`Σ s_c·q = s_c·Σ q`).
 #[derive(Clone, Debug)]
-pub enum Readout {
-    /// fp16 table, fp16 sums.
-    F16,
-    /// int8 table: svod accumulates an i8 sum in i32 (exact); the
-    /// per-column scale is applied host-side (`Σ s_c·q = s_c·Σ q`).
-    I32 { scales: Vec<f32> },
+pub struct Readout {
+    scales: Vec<f32>,
 }
 
 impl Readout {
-    fn elem_bytes(&self) -> usize {
-        match self {
-            Readout::F16 => 2,
-            Readout::I32 { .. } => 4,
-        }
-    }
-
     /// Copy the first `rows` row-sums out of `jit`'s output buffer into
-    /// `out` as f32 logit sums (`rows × NUM_LANGS` values; the plan's rows
-    /// are `TABLE_COLS` wide and the padding columns are dropped).
-    /// `scratch` holds the raw bytes between calls.
+    /// `out` as f32 logit sums (`rows × NUM_LANGS` values; the padding
+    /// columns are dropped). `scratch` holds the raw bytes between calls.
     fn read_sums(
         &self,
         jit: &SpellmanJit,
@@ -106,28 +93,16 @@ impl Readout {
         scratch: &mut Vec<u8>,
         out: &mut [f32],
     ) -> Result<(), BulkError> {
-        scratch.resize(rows * TABLE_COLS * self.elem_bytes(), 0);
+        scratch.resize(rows * TABLE_COLS * size_of::<i32>(), 0);
         jit.output()
             .context(JitSnafu)?
             .copyout_prefix(scratch)
             .context(DeviceSnafu)?;
         let out = out[..rows * NUM_LANGS].as_chunks_mut::<NUM_LANGS>().0;
-        match self {
-            Readout::F16 => {
-                let raw = scratch.as_chunks::<2>().0.as_chunks::<TABLE_COLS>().0;
-                for (dst, src) in out.iter_mut().zip(raw) {
-                    for (o, b) in dst.iter_mut().zip(src) {
-                        *o = f16_to_f32(u16::from_ne_bytes(*b));
-                    }
-                }
-            }
-            Readout::I32 { scales } => {
-                let raw = scratch.as_chunks::<4>().0.as_chunks::<TABLE_COLS>().0;
-                for (dst, src) in out.iter_mut().zip(raw) {
-                    for ((o, b), scale) in dst.iter_mut().zip(src).zip(scales) {
-                        *o = i32::from_ne_bytes(*b) as f32 * scale;
-                    }
-                }
+        let raw = scratch.as_chunks::<4>().0.as_chunks::<TABLE_COLS>().0;
+        for (dst, src) in out.iter_mut().zip(raw) {
+            for ((o, b), scale) in dst.iter_mut().zip(src).zip(&self.scales) {
+                *o = i32::from_ne_bytes(*b) as f32 * scale;
             }
         }
         Ok(())
@@ -135,85 +110,40 @@ impl Readout {
 }
 
 impl SpellmanModel {
-    /// The JIT weights for a loaded model: int8 scoring when the artifact
-    /// stores `P` as int8 with per-column scales (1.5–2.5× faster gather on
-    /// the shipped table, exact up to the artifact's own quantization),
-    /// otherwise the fp16 table.
-    pub fn for_model(model: &Model) -> Result<SpellmanModel, svod_tensor::error::Error> {
-        match &model.int8_columns {
-            Some(int8) => Self::from_int8_columns(&int8.q, &int8.scales),
-            None => Self::from_table(&model.table),
-        }
-    }
-
-    /// Build from an int8 table `[D+1, NUM_LANGS]` with per-column
-    /// `scales`. The ±q doubling stays in the graph, as in
-    /// [`Self::from_table`]; the i8 sum accumulates in i32, and the scales
-    /// are applied at read-out.
-    pub fn from_int8_columns(
-        q: &[i8],
-        scales: &[f32],
-    ) -> Result<SpellmanModel, svod_tensor::error::Error> {
-        let q = pad_columns(q);
+    /// The JIT weights for a loaded model: its int8 table, padded to
+    /// `TABLE_COLS` and doubled into the ±q blocks, with the per-column
+    /// scales kept for read-out.
+    pub fn from_model(model: &Model) -> Result<SpellmanModel, svod_tensor::error::Error> {
+        let q = pad_columns(&model.table.q);
         let rows = q.len() / TABLE_COLS;
-        // Born 2-D for the same fusion reason as `from_table`.
+        // The constant buffer must be born 2-D: a reshape op between the
+        // buffer and the graph breaks the embedding fusion (~2.4× on the
+        // BEAM-scheduled graph, measured), and explicit boundaries are
+        // worse still — an eager realize() blocks inlining, a contiguous()
+        // marker lands on the execution path (60× single-doc). buffer →
+        // neg → cat stays lazy for the plan to fold.
         let p = Tensor::from_raw_bytes(
             bytemuck::cast_slice(&q),
             &[rows, TABLE_COLS],
             svod_dtype::DType::Int8,
         )?;
         let neg = -&p;
-        let jit_table = Tensor::cat(&[&p, &neg], 0)?;
+        let table = Tensor::cat(&[&p, &neg], 0)?;
         Ok(SpellmanModel {
-            table: jit_table,
+            table,
             rows: (2 * rows) as i32,
-            readout: Readout::I32 {
-                scales: scales.to_vec(),
+            readout: Readout {
+                scales: model.table.scales.clone(),
             },
         })
     }
 
-    /// Build from the canonical (dequantized) host table `[D+1, NUM_LANGS]`
-    /// f32, padded to `TABLE_COLS` — the single representation the loader resolves from any storage
-    /// precision. The f16 cast and the ±P doubling (`cat`) stay in the
-    /// graph, so the doubled table is fused into the JIT plan's constant
-    /// realization instead of staging through host memory twice.
-    pub fn from_table(table: &[f32]) -> Result<SpellmanModel, svod_tensor::error::Error> {
-        let table = pad_columns(table);
-        let rows = table.len() / TABLE_COLS;
-        // The constant buffer must be born 2-D: a reshape op between the
-        // buffer and the cast breaks the embedding fusion (~2.4× on the
-        // BEAM-scheduled graph, measured), and explicit boundaries are
-        // worse still — an eager realize() blocks inlining, a contiguous()
-        // marker lands on the execution path (60× single-doc). buffer →
-        // cast → neg → cat is the state-dict load idiom, fully lazy for
-        // the plan to fold.
-        let p = Tensor::from_raw_bytes(
-            bytemuck::cast_slice(&table),
-            &[rows, TABLE_COLS],
-            svod_dtype::DType::Float32,
-        )?
-        .cast(svod_dtype::DType::Float16);
-        let neg = -&p;
-        let jit_table = Tensor::cat(&[&p, &neg], 0)?;
-        Ok(SpellmanModel {
-            table: jit_table,
-            rows: (2 * rows) as i32,
-            readout: Readout::F16,
-        })
-    }
-
     /// Build the gather-sum graph over a `[b, K]` bucket-index batch.
-    /// Returns raw row-sums `[b, C]` (fp16, or i32 for an int8 table — see
-    /// [`Readout`]); mean-pooling, the scales, the bias add, the
-    /// softmax, and the argmax all run host-side at read-out (30 floats per
-    /// document, with the token counts featurization already computed).
-    ///
-    /// The whole graph is fp16 (no cast kernels on the replay path — ARM
-    /// NEON fp16 native). Precision is safe here: each gathered value is one
-    /// exact fp16 load, the K-term sums stay far from fp16 range, and LID
-    /// logit margins are wide. Padding tokens gather the all-zero row, so
-    /// the sum is unaffected by padding.
+    /// Returns raw i32 row-sums `[b, TABLE_COLS]` (see [`Readout`]); the
+    /// scales, mean-pooling, the bias add, the softmax, and the argmax all
+    /// run host-side at read-out (30 floats per document, with the token
+    /// counts featurization already computed). Padding tokens gather the
+    /// all-zero row, so the sum is unaffected by padding.
     pub fn forward_batch(
         &self,
         idx: &Tensor,
@@ -223,11 +153,11 @@ impl SpellmanModel {
         // The prepare-time placeholder is allocated at max batch; shrink to
         // the symbolic batch for kernel specialization at bind time.
         let idx = idx.try_shrink([Some((SInt::Const(0), bv.clone())), None])?;
-        // Row-gather the ±P table: [b, K] -> [b, K, C]. `embedding` needs a
+        // Row-gather the ±q table: [b, K] -> [b, K, C]. `embedding` needs a
         // concrete index shape, which is exactly why K stays a JIT constant.
         //
         // The indices stay i32 on purpose (the largest table offset,
-        // 2·(2^18+1)·30 ≈ 15.7M, fits). `embedding` builds a one-hot
+        // 2·(2^18+1)·32 ≈ 16.8M, fits). `embedding` builds a one-hot
         // `where(idx == arange, table, 0)` reduce that the scheduler must
         // collapse into a direct row load; svod's collapse strips a single
         // cast off the range side, and since alpha.7 `arange` is i32, so an
@@ -241,7 +171,7 @@ impl SpellmanModel {
         // else-branch is 0, so without it LLVM must zero the lanes on every
         // token and cannot fuse the widen into the add (`saddw` on NEON).
         // Clamped, the gate folds away — 79 → 50 instructions per token,
-        // ~20-27% faster single-thread kernel (M4 Max, int8, 32 columns).
+        // ~20-27% faster single-thread kernel (M4 Max, 32 columns).
         let idx = idx.maximum(0i32)?.minimum(self.rows - 1)?;
         let rows = self.table.embedding(&idx)?;
         rows.sum(1)
@@ -390,7 +320,7 @@ impl BulkDetector {
     /// `max_batch` is the compiled batch size — `detect_batch` accepts up
     /// to that many rows per call, and a full batch is the efficient one.
     /// The state dict is loaded once and feeds both the host-side feature
-    /// config and the device-resident fp16 weight table, which the ladder's
+    /// config and the device-resident int8 weight table, which the ladder's
     /// plans share.
     ///
     /// The input buffers are host-mapped (not device-local): featurization
@@ -427,7 +357,7 @@ impl BulkDetector {
         // (rather than letting each plan fold its own copy) keeps the
         // ladder at one table's worth of memory; the plans gather from the
         // shared buffer.
-        let inner = SpellmanModel::for_model(&model).context(TensorSnafu)?;
+        let inner = SpellmanModel::from_model(&model).context(TensorSnafu)?;
         inner.table.realize().context(TensorSnafu)?;
         let readout = inner.readout.clone();
         let rungs = K_LADDER
@@ -457,23 +387,11 @@ impl BulkDetector {
     }
 
     /// Load the default model from the Hugging Face Hub
-    /// ([`hub::DEFAULT_HUB_REPO`], f16) — svod's `from_hub` wiring: the
-    /// first call downloads into the HF cache, later calls replay it.
+    /// ([`crate::hub::DEFAULT_HUB_REPO`]) — svod's `from_hub` wiring: the first
+    /// call downloads into the HF cache, later calls replay it.
     pub fn from_hub(k: usize, max_batch: usize) -> Result<BulkDetector, BulkError> {
         let dir =
             crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, None).context(HubSnafu)?;
-        Self::load(&dir, k, max_batch)
-    }
-
-    /// Load a storage-format variant (`"int8-col"`, `"fp8-col"`, …) of the
-    /// default Hub model.
-    pub fn from_hub_variant(
-        variant: &str,
-        k: usize,
-        max_batch: usize,
-    ) -> Result<BulkDetector, BulkError> {
-        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, Some(variant))
-            .context(HubSnafu)?;
         Self::load(&dir, k, max_batch)
     }
 
@@ -699,33 +617,6 @@ impl BulkDetector {
     }
 }
 
-/// Widen an IEEE 754 binary16 value to f32. The JIT plan emits fp16 logits;
-/// this is the only dtype conversion on the runtime path (once per output
-/// element, after execution).
-#[inline]
-pub fn f16_to_f32(bits: u16) -> f32 {
-    let sign = u32::from(bits >> 15) << 31;
-    let exp = u32::from((bits >> 10) & 0x1F);
-    let frac = u32::from(bits & 0x03FF);
-    let out = match (exp, frac) {
-        (0, 0) => sign, // ±0
-        (0, _) => {
-            // Subnormal: normalize the mantissa, re-bias the exponent.
-            let mut shifts = 0u32;
-            let mut f = frac;
-            while f & 0x0400 == 0 {
-                f <<= 1;
-                shifts += 1;
-            }
-            f &= 0x03FF;
-            sign | ((127 - 24 + 10 - shifts) << 23) | (f << 13)
-        }
-        (0x1F, _) => sign | 0x7F80_0000 | (frac << 13), // inf / nan
-        _ => sign | ((exp + 112) << 23) | (frac << 13), // normal
-    };
-    f32::from_bits(out)
-}
-
 /// The detection of a text routed past the model: its script-unique
 /// language, or none when it has no letters of a supported script.
 fn direct_detection(route: crate::route::Route) -> Detection {
@@ -817,7 +708,7 @@ impl SingleDetector {
         let sd = svod_model::state::load_safetensors_dir(dir).context(StateSnafu)?;
         let model = Model::from_state_dict(&sd, metadata).context(ModelSnafu)?;
         let k = k.max(1);
-        let inner = SpellmanModel::for_model(&model).context(TensorSnafu)?;
+        let inner = SpellmanModel::from_model(&model).context(TensorSnafu)?;
         inner.table.realize().context(TensorSnafu)?;
         let readout = inner.readout.clone();
         let mut plans = Vec::new();
@@ -841,18 +732,11 @@ impl SingleDetector {
         })
     }
 
-    /// Load the default model from the Hugging Face Hub (f16 variant);
-    /// see [`BulkDetector::from_hub`] for the caching behavior.
+    /// Load the default model from the Hugging Face Hub; see
+    /// [`BulkDetector::from_hub`] for the caching behavior.
     pub fn from_hub(k: usize) -> Result<SingleDetector, BulkError> {
         let dir =
             crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, None).context(HubSnafu)?;
-        Self::load(&dir, k)
-    }
-
-    /// Load a storage-format variant of the default Hub model.
-    pub fn from_hub_variant(variant: &str, k: usize) -> Result<SingleDetector, BulkError> {
-        let dir = crate::hub::download_model(crate::hub::DEFAULT_HUB_REPO, Some(variant))
-            .context(HubSnafu)?;
         Self::load(&dir, k)
     }
 
@@ -928,32 +812,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn f16_to_f32_reference_values() {
-        // IEEE 754 binary16 reference patterns.
-        assert_eq!(f16_to_f32(0x0000), 0.0);
-        assert_eq!(f16_to_f32(0x8000), -0.0);
-        assert_eq!(f16_to_f32(0x3C00), 1.0);
-        assert_eq!(f16_to_f32(0xBC00), -1.0);
-        assert_eq!(f16_to_f32(0x3800), 0.5);
-        assert_eq!(f16_to_f32(0x4000), 2.0);
-        assert_eq!(f16_to_f32(0xC000), -2.0);
-        assert_eq!(f16_to_f32(0x3555), 1365.0 / 4096.0); // ~1/3
-        assert_eq!(f16_to_f32(0x7BFF), 65504.0); // max normal
-        assert_eq!(f16_to_f32(0x0001), 1.0 / 16777216.0); // min subnormal (2^-24)
-        assert_eq!(f16_to_f32(0x03FF), 1023.0 / 16777216.0); // max subnormal (1023·2^-24)
-        assert!(f16_to_f32(0x7C00).is_infinite());
-        assert!(f16_to_f32(0xFC00).is_infinite());
-        assert!(f16_to_f32(0x7E00).is_nan());
-        // Monotonicity over all positive finite values.
-        let mut prev = f32::NEG_INFINITY;
-        for bits in 0x0000u16..0x7C00 {
-            let v = f16_to_f32(bits);
-            assert!(v >= prev, "not monotone at {bits:#06x}");
-            prev = v;
-        }
-    }
-
-    #[test]
     fn bulk_smoke_end_to_end() {
         let tmp = tempfile::tempdir().unwrap();
         crate::model::test_support::write_test_model(tmp.path());
@@ -975,47 +833,6 @@ mod tests {
         // A smaller batch rebinds `b` on the same plan.
         let res2 = det.detect_batch(&["ещё раз"]).unwrap();
         assert!(res2[0].lang.is_some());
-    }
-
-    #[test]
-    fn int8_column_artifacts_score_in_int8_like_f16() {
-        // The fixture's two weights are their own column maxima, so they
-        // quantize exactly: the int8 plan (i32 sums × column scale) must
-        // reproduce the f16 plan. Row-scaled int8 cannot factor its scales
-        // out of the K-sum and stays on the f16 path.
-        let f16_dir = tempfile::tempdir().unwrap();
-        crate::model::test_support::write_test_model(f16_dir.path());
-        let col_dir = tempfile::tempdir().unwrap();
-        crate::model::test_support::write_int8_model(col_dir.path(), "column");
-        let row_dir = tempfile::tempdir().unwrap();
-        crate::model::test_support::write_int8_model(row_dir.path(), "row");
-
-        let model = |dir: &tempfile::TempDir| Model::load(dir.path()).unwrap();
-        assert!(matches!(
-            SpellmanModel::for_model(&model(&col_dir)).unwrap().readout,
-            Readout::I32 { .. }
-        ));
-        assert!(matches!(
-            SpellmanModel::for_model(&model(&row_dir)).unwrap().readout,
-            Readout::F16
-        ));
-
-        let texts = ["Привет, как дела?", "Hello world", "ещё раз", "12345"];
-        let long = "Привет, как дела? Это длинный документ. ".repeat(60);
-        let mut f16 = BulkDetector::load(f16_dir.path(), 16, 8).unwrap();
-        let mut int8 = BulkDetector::load(col_dir.path(), 16, 8).unwrap();
-        let mut single = SingleDetector::load(col_dir.path(), 16).unwrap();
-        let expect = f16.detect_batch(&texts).unwrap();
-        for (a, b) in expect.iter().zip(int8.detect_batch(&texts).unwrap()) {
-            assert_eq!(a.lang, b.lang);
-            assert!((a.confidence - b.confidence).abs() < 1e-3);
-        }
-        for text in texts.iter().copied().chain([long.as_str()]) {
-            let a = f16.detect_batch(&[text]).unwrap().remove(0);
-            let b = single.detect(text).unwrap();
-            assert_eq!(a.lang, b.lang, "{text:?}");
-            assert!((a.confidence - b.confidence).abs() < 1e-3, "{text:?}");
-        }
     }
 
     #[test]
@@ -1051,7 +868,7 @@ mod tests {
     fn single_long_document_scores_exactly() {
         // The folded score is additive over feature ids, so chunked
         // scoring at a tiny K must reproduce the untruncated K=8192
-        // detection: same language, same confidence (up to fp16 sum
+        // detection: same language, same confidence (up to f32 sum
         // ordering), same uncertainty. This is the property that makes
         // detect() size-safe: no truncation, no first-K position bias.
         let tmp = tempfile::tempdir().unwrap();

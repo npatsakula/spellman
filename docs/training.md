@@ -241,15 +241,12 @@ Details that matter:
 - **Hash A/B:** rerun with different `--hash-id` and compare val
   accuracy; `--hash-stats` prints the distinct-key chi²/dof.
 - Export writes `model.json` + `model.safetensors` plus
-  `eval_test.tsv`/`eval_val.tsv` for `assess`. `--store
-  {f16,int8-row,int8-col,fp8-row,fp8-col}` picks the folded-table storage
-  format: int8/fp8 add a `scales` tensor and a `quant` block in
-  `model.json`, roughly halving the artifact. Every quantized store is
-  gated at export against validation accuracy (`--quant-max-drop`,
-  default 0.2pp) — the loader dequantizes, so the runtime graph never
-  sees the difference. `uv run spellman-train quantize --store int8-row
-  --out /tmp/mi` rewrites an existing model into any format for offline
-  comparison.
+  `eval_test.tsv`/`eval_val.tsv` for `assess`. The folded table is stored
+  in the runtime's one format, int8 with per-column `scales` (`quant:
+  int8/column` in `model.json`), gated at export against validation
+  accuracy (`--quant-max-drop`, default 0.2pp vs the f16 fold). `uv run
+  spellman-train quantize --model OLD --out NEW` converts an older
+  artifact (f16, row-scaled int8, fp8) to it.
 
 ## Evaluation
 
@@ -261,7 +258,7 @@ Details that matter:
   --dump-per-lang N` writes most-confident-first error rows
   (gold/pred/conf/text) per gold language for manual auditing.
 - `spellman eval` — the CLI's accuracy+throughput pass over the same
-  TSVs (fp16 path, what inference actually scores).
+  TSVs (the int8 path inference actually scores).
 - **Referees** (frozen, never trained on):
   - `train/tatoeba_eval.tsv` — out-of-domain sentences, 26 languages,
     2,000/lang cap, seeded selection;
@@ -298,7 +295,8 @@ v14 = the v13c mix (v12 recipe + the six crawl datasets
 `vpermilp/lid-{sah,tyv,kpv,mhr,oss,udm}` as 11 raw `hf:` lanes,
 120k-per-language cap) re-mixed with `--short-floor 0.5` and trained at
 **`--log2-d 18 --k 512`** (`recipes/v14.sh`; θ recalibrated by
-error-detection F1 = 0.67; root artifact = int8-row store), diverse
+error-detection F1 = 0.67; published with an int8-row root, now the
+int8-col store), diverse
 budgets ×1.5
 (rus/ukr 20k, Turkic 16k), a 12k wikisource literary lane for rus, and
 `--short-floor 0.40`: FineWeb-2 line-windows + ~104k Tatoeba training

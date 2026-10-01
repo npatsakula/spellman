@@ -510,7 +510,7 @@ thread_local! {
 /// before choosing a plan K and that chunk long rows themselves.
 ///
 /// Two passes over a per-thread key buffer: the packer emits every key (a
-/// shift, a mask and an xor each), then [`FeatureHasher::signed_indices`]
+/// shift, a mask and an xor each), then [`crate::hash::FeatureHasher::signed_indices`]
 /// hashes the whole slice in one vectorized loop straight into `out` —
 /// instead of an 8-key buffer flushed through a hash call and an extend.
 pub fn push_signed_indices(

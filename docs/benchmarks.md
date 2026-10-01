@@ -140,10 +140,8 @@ svod JIT plans, BEAM=16, k=1024 (top rung), batch 512, Tatoeba eval —
 | AMD Ryzen 9 7950X3D | v14 (2^18) | 1.9 µs/sample (~525k docs/s) | 4.3 µs/doc |
 | AMD AI 395 Max (before the batch/K rework) | v12 (2^17) | 1.2 µs/sample (~830k docs/s) | 13.0 µs/doc |
 
-On the Apple M4 Max the measured path is the `int8-col` variant (scored
-in int8, see the design doc); the f16-computed path is not tuned — the
-index clamp that lets int8 fuse its widen-and-add costs f16 ~80% when
-the kernel is svod-threaded — and is not reported. `lid-bench` against
+On the Apple M4 Max (int8 with per-column scales, the runtime's only
+store — see the design doc): `lid-bench` against
 `train/tatoeba_eval.tsv` and the 368,507-row held-out mix
 (`model/eval_test.tsv`), BEAM=16, timed threads on performance cores;
 ranges over two runs. The one-thread and replica rows run with
@@ -189,9 +187,7 @@ separate helper process: `cargo install svod-tensor --bin
 svod-beam-worker` and point `SVOD_BEAM_WORKER` at the installed binary,
 otherwise `BEAM=16` fails at prepare time with "BEAM helper is
 unavailable" (the heuristic default needs nothing). The 2^18 table costs nothing measurable on the 7950X3D:
-the v12-era 2^17 model times identically (3.5 µs) on the same box, and
-the int8-row root and f16 store time identically too (the loader
-dequantizes once). Scoring is pure table lookups after the algebraic
+the v12-era 2^17 model times identically (3.5 µs) on the same box. Scoring is pure table lookups after the algebraic
 fold `P = E·W` — no embedding gathers, no matmul. fmix32 bucket spread
 on real n-grams: chi²/dof ≈ 1.006 (uniform ≈ 1.0).
 

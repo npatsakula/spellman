@@ -22,8 +22,9 @@
 //!   [`jit::SingleDetector`] (B=1 baked into the plan — fully static
 //!   kernels) and [`jit::BulkDetector`] (constant K, rebindable batch,
 //!   zero-copy featurization straight into the plan's input buffer).
-//!   The graph is pure fp16 end to end; f32 conversion happens once at
-//!   host read-out.
+//!   The table is int8 with per-column scales; the graph gathers and sums
+//!   it exactly in i32, and the scales apply once per document at host
+//!   read-out.
 
 pub mod features;
 pub mod hash;
