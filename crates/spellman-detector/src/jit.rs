@@ -40,11 +40,39 @@ use spellman_language::{Lang, NUM_LANGS};
 
 use crate::model::Model;
 
+/// Columns of the gather table: `NUM_LANGS` rounded up to 32, the trailing
+/// columns all-zero. A 30-wide int8 row straddles two 64-byte cache lines
+/// at 14 of 16 offsets; a 32-wide one never does (one line per gathered
+/// int8 row, two aligned for fp16) — ~10-16% faster single-thread kernel
+/// (M4 Max, int8). The plan's row-sums keep this width; read-out drops the
+/// padding.
+pub const TABLE_COLS: usize = NUM_LANGS.next_multiple_of(32);
+
+/// Copy `[rows, NUM_LANGS]` row-major values into `[rows, TABLE_COLS]`,
+/// zero-padding each row.
+fn pad_columns<T: Copy + Default>(values: &[T]) -> Vec<T> {
+    let mut padded = vec![T::default(); values.len() / NUM_LANGS * TABLE_COLS];
+    for (dst, src) in padded
+        .as_chunks_mut::<TABLE_COLS>()
+        .0
+        .iter_mut()
+        .zip(values.as_chunks::<NUM_LANGS>().0)
+    {
+        dst[..NUM_LANGS].copy_from_slice(src);
+    }
+    padded
+}
+
 /// Weight tensors for the JIT graph (device-resident, lazily computed).
+/// Cloning shares the table.
+#[derive(Clone)]
 pub struct SpellmanModel {
-    /// `[2*(D+1), NUM_LANGS]` — `P` block then `-P` block: fp16, or int8
+    /// `[2*(D+1), TABLE_COLS]` — `P` block then `-P` block: fp16, or int8
     /// for column-quantized artifacts.
     table: Tensor,
+    /// Row count of `table`, `2*(D+1)`: the bound the gather indices are
+    /// clamped to (see [`Self::forward_batch`]).
+    rows: i32,
     /// How the plan's row-sums turn back into f32 logit sums.
     readout: Readout,
 }
@@ -68,8 +96,9 @@ impl Readout {
     }
 
     /// Copy the first `rows` row-sums out of `jit`'s output buffer into
-    /// `out` as f32 logit sums (`rows × NUM_LANGS` values). `scratch` holds
-    /// the raw bytes between calls.
+    /// `out` as f32 logit sums (`rows × NUM_LANGS` values; the plan's rows
+    /// are `TABLE_COLS` wide and the padding columns are dropped).
+    /// `scratch` holds the raw bytes between calls.
     fn read_sums(
         &self,
         jit: &SpellmanJit,
@@ -77,25 +106,27 @@ impl Readout {
         scratch: &mut Vec<u8>,
         out: &mut [f32],
     ) -> Result<(), BulkError> {
-        let n = rows * NUM_LANGS;
-        scratch.resize(n * self.elem_bytes(), 0);
+        scratch.resize(rows * TABLE_COLS * self.elem_bytes(), 0);
         jit.output()
             .context(JitSnafu)?
             .copyout_prefix(scratch)
             .context(DeviceSnafu)?;
+        let out = out[..rows * NUM_LANGS].as_chunks_mut::<NUM_LANGS>().0;
         match self {
             Readout::F16 => {
-                for (o, b) in out[..n].iter_mut().zip(scratch.as_chunks::<2>().0) {
-                    *o = f16_to_f32(u16::from_ne_bytes(*b));
+                let raw = scratch.as_chunks::<2>().0.as_chunks::<TABLE_COLS>().0;
+                for (dst, src) in out.iter_mut().zip(raw) {
+                    for (o, b) in dst.iter_mut().zip(src) {
+                        *o = f16_to_f32(u16::from_ne_bytes(*b));
+                    }
                 }
             }
             Readout::I32 { scales } => {
-                for (i, (o, b)) in out[..n]
-                    .iter_mut()
-                    .zip(scratch.as_chunks::<4>().0)
-                    .enumerate()
-                {
-                    *o = i32::from_ne_bytes(*b) as f32 * scales[i % NUM_LANGS];
+                let raw = scratch.as_chunks::<4>().0.as_chunks::<TABLE_COLS>().0;
+                for (dst, src) in out.iter_mut().zip(raw) {
+                    for ((o, b), scale) in dst.iter_mut().zip(src).zip(scales) {
+                        *o = i32::from_ne_bytes(*b) as f32 * scale;
+                    }
                 }
             }
         }
@@ -110,31 +141,32 @@ impl SpellmanModel {
     /// otherwise the fp16 table.
     pub fn for_model(model: &Model) -> Result<SpellmanModel, svod_tensor::error::Error> {
         match &model.int8_columns {
-            Some(int8) => Self::from_int8_columns(&int8.q, &int8.scales, NUM_LANGS),
-            None => Self::from_table(&model.table, NUM_LANGS),
+            Some(int8) => Self::from_int8_columns(&int8.q, &int8.scales),
+            None => Self::from_table(&model.table),
         }
     }
 
-    /// Build from an int8 table `[D+1, num_langs]` with per-column
+    /// Build from an int8 table `[D+1, NUM_LANGS]` with per-column
     /// `scales`. The ±q doubling stays in the graph, as in
     /// [`Self::from_table`]; the i8 sum accumulates in i32, and the scales
     /// are applied at read-out.
     pub fn from_int8_columns(
         q: &[i8],
         scales: &[f32],
-        num_langs: usize,
     ) -> Result<SpellmanModel, svod_tensor::error::Error> {
-        let rows = q.len() / num_langs;
+        let q = pad_columns(q);
+        let rows = q.len() / TABLE_COLS;
         // Born 2-D for the same fusion reason as `from_table`.
         let p = Tensor::from_raw_bytes(
-            bytemuck::cast_slice(q),
-            &[rows, num_langs],
+            bytemuck::cast_slice(&q),
+            &[rows, TABLE_COLS],
             svod_dtype::DType::Int8,
         )?;
         let neg = -&p;
         let jit_table = Tensor::cat(&[&p, &neg], 0)?;
         Ok(SpellmanModel {
             table: jit_table,
+            rows: (2 * rows) as i32,
             readout: Readout::I32 {
                 scales: scales.to_vec(),
             },
@@ -142,15 +174,13 @@ impl SpellmanModel {
     }
 
     /// Build from the canonical (dequantized) host table `[D+1, NUM_LANGS]`
-    /// f32 — the single representation the loader resolves from any storage
+    /// f32, padded to `TABLE_COLS` — the single representation the loader resolves from any storage
     /// precision. The f16 cast and the ±P doubling (`cat`) stay in the
     /// graph, so the doubled table is fused into the JIT plan's constant
     /// realization instead of staging through host memory twice.
-    pub fn from_table(
-        table: &[f32],
-        num_langs: usize,
-    ) -> Result<SpellmanModel, svod_tensor::error::Error> {
-        let rows = table.len() / num_langs;
+    pub fn from_table(table: &[f32]) -> Result<SpellmanModel, svod_tensor::error::Error> {
+        let table = pad_columns(table);
+        let rows = table.len() / TABLE_COLS;
         // The constant buffer must be born 2-D: a reshape op between the
         // buffer and the cast breaks the embedding fusion (~2.4× on the
         // BEAM-scheduled graph, measured), and explicit boundaries are
@@ -159,8 +189,8 @@ impl SpellmanModel {
         // cast → neg → cat is the state-dict load idiom, fully lazy for
         // the plan to fold.
         let p = Tensor::from_raw_bytes(
-            bytemuck::cast_slice(table),
-            &[rows, num_langs],
+            bytemuck::cast_slice(&table),
+            &[rows, TABLE_COLS],
             svod_dtype::DType::Float32,
         )?
         .cast(svod_dtype::DType::Float16);
@@ -168,6 +198,7 @@ impl SpellmanModel {
         let jit_table = Tensor::cat(&[&p, &neg], 0)?;
         Ok(SpellmanModel {
             table: jit_table,
+            rows: (2 * rows) as i32,
             readout: Readout::F16,
         })
     }
@@ -203,6 +234,15 @@ impl SpellmanModel {
         // i64 index made that side `cast(i64, cast(i32, range))` — the
         // collapse missed and every token scanned all 2·(D+1) table rows.
         // Do not cast `idx` to i64 here.
+        //
+        // The clamp is a no-op on every index featurization emits (all are
+        // < 2·(D+1)), but it is the bound the backend cannot see otherwise:
+        // the collapsed gather keeps a `0 <= idx < rows` gate whose
+        // else-branch is 0, so without it LLVM must zero the lanes on every
+        // token and cannot fuse the widen into the add (`saddw` on NEON).
+        // Clamped, the gate folds away — 79 → 50 instructions per token,
+        // ~20-27% faster single-thread kernel (M4 Max, int8, 32 columns).
+        let idx = idx.maximum(0i32)?.minimum(self.rows - 1)?;
         let rows = self.table.embedding(&idx)?;
         rows.sum(1)
     }
@@ -355,9 +395,9 @@ impl BulkDetector {
         // (rather than letting each plan fold its own copy) keeps the
         // ladder at one table's worth of memory; the plans gather from the
         // shared buffer.
-        let SpellmanModel { table, readout } =
-            SpellmanModel::for_model(&model).context(TensorSnafu)?;
-        table.realize().context(TensorSnafu)?;
+        let inner = SpellmanModel::for_model(&model).context(TensorSnafu)?;
+        inner.table.realize().context(TensorSnafu)?;
+        let readout = inner.readout.clone();
         let rungs = K_LADDER
             .iter()
             .copied()
@@ -365,11 +405,7 @@ impl BulkDetector {
             .chain(std::iter::once(k));
         let mut plans = Vec::new();
         for rung in rungs {
-            let mut jit = SpellmanJit::new(SpellmanModel {
-                table: table.clone(),
-                readout: readout.clone(),
-            })
-            .with_b_fixed(max_batch);
+            let mut jit = SpellmanJit::new(inner.clone()).with_b_fixed(max_batch);
             jit.prepare_with_config(InputSpec::i32(&[max_batch, rung]), config)
                 .context(JitSnafu)?;
             plans.push(Plan {
@@ -742,9 +778,9 @@ impl SingleDetector {
         let sd = svod_model::state::load_safetensors_dir(dir).context(StateSnafu)?;
         let model = Model::from_state_dict(&sd, metadata).context(ModelSnafu)?;
         let k = k.max(1);
-        let SpellmanModel { table, readout } =
-            SpellmanModel::for_model(&model).context(TensorSnafu)?;
-        table.realize().context(TensorSnafu)?;
+        let inner = SpellmanModel::for_model(&model).context(TensorSnafu)?;
+        inner.table.realize().context(TensorSnafu)?;
+        let readout = inner.readout.clone();
         let mut plans = Vec::new();
         for rung in K_LADDER
             .iter()
@@ -752,11 +788,7 @@ impl SingleDetector {
             .filter(|&rung| rung < k)
             .chain(std::iter::once(k))
         {
-            let mut jit = SpellmanJit::new(SpellmanModel {
-                table: table.clone(),
-                readout: readout.clone(),
-            })
-            .with_b_fixed(1);
+            let mut jit = SpellmanJit::new(inner.clone()).with_b_fixed(1);
             jit.prepare_with_config(InputSpec::i32(&[1, rung]), config)
                 .context(JitSnafu)?;
             plans.push(SinglePlan { jit, k: rung });

@@ -43,7 +43,7 @@ use svod_tensor::{BoundVariable, Tensor};
 use spellman_detector::BulkDetector;
 use spellman_detector::features::{FeatureConfig, bucket_tokens, fill_signed_indices};
 use spellman_detector::hash::FeatureHasher;
-use spellman_detector::jit::{SpellmanJit, SpellmanModel, f16_to_f32};
+use spellman_detector::jit::{SpellmanJit, SpellmanModel, TABLE_COLS, f16_to_f32};
 use spellman_detector::model::Model;
 
 /// K-sum accumulator of an int8 plan.
@@ -159,7 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- plans: batch fixed at compile time, as BulkDetector ships -------
     let mut f16_plan =
-        SpellmanJit::new(SpellmanModel::from_table(&model.table, cols)?).with_b_fixed(batch);
+        SpellmanJit::new(SpellmanModel::from_table(&model.table)?).with_b_fixed(batch);
     f16_plan.prepare(InputSpec::i32(&[batch, k]))?;
 
     let int8 = Int8Model::from_table(&model.table, d, cols, Accum::I32);
@@ -224,7 +224,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- correctness cross-check (every row) ------------------------------
     {
         f16_plan.execute()?;
-        let mut f16_sums = vec![0u16; batch * cols];
+        // The shipped f16 plan's rows are TABLE_COLS wide (padded).
+        let mut f16_sums = vec![0u16; batch * TABLE_COLS];
         f16_plan
             .output()?
             .copyout_prefix(bytemuck::cast_slice_mut(&mut f16_sums))?;
@@ -239,7 +240,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .output()?
             .copyout_prefix(bytemuck::cast_slice_mut(&mut i8f16_sums))?;
 
-        let reference: Vec<f32> = f16_sums.iter().map(|&s| f16_to_f32(s)).collect();
+        let reference: Vec<f32> = f16_sums
+            .as_chunks::<TABLE_COLS>()
+            .0
+            .iter()
+            .flat_map(|row| row[..cols].iter().map(|&s| f16_to_f32(s)))
+            .collect();
         let check = |label: &str, logit: &dyn Fn(usize) -> f32| {
             let mut worst_abs = 0f32;
             let mut worst_rel = 0f32;
