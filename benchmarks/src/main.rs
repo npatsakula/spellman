@@ -24,8 +24,11 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
+use rayon::prelude::*;
 use spellman_detector::{BulkDetector, SingleDetector};
 use spellman_language::Lang;
+use svod_schedule::{HeuristicsConfig, OptStrategy, OptimizerConfig};
+use svod_tensor::PrepareConfig;
 
 /// Our ISO 639-3 code -> lingua's `Language`, where supported.
 fn lingua_languages() -> Vec<(lingua::Language, &'static str)> {
@@ -122,8 +125,18 @@ struct Cli {
     k: usize,
 
     /// spellman batch size.
-    #[arg(long, default_value_t = 1024)]
+    #[arg(long, default_value_t = 4096)]
     max_batch: usize,
+
+    /// Worker threads for the all-cores runs (spellman replicas,
+    /// whichlang); the single-threaded runs always use one.
+    #[arg(long, default_value_t = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))]
+    threads: usize,
+
+    /// svod BEAM width for spellman plans (0 = heuristic schedule; >0 needs
+    /// svod's search helper, see the README).
+    #[arg(long, env = "BEAM", default_value_t = 0)]
+    beam: usize,
 
     /// Print a per-gold-language accuracy matrix.
     #[arg(long)]
@@ -162,16 +175,37 @@ fn main() {
     let texts: Vec<String> = rows.iter().map(|(_, t)| t.clone()).collect();
     let golds: Vec<&str> = rows.iter().map(|(l, _)| l.code()).collect();
 
+    // Every third-party tool scores on one thread, so the like-for-like
+    // spellman rows are the one-thread ones: a plan prepared for one thread,
+    // driven from inside a one-thread pool (featurization included). The
+    // all-cores rows run spellman as one single-thread replica per worker
+    // (no per-execute launch cost) next to whichlang on the same pool.
+    // macOS schedules a default-QoS thread onto efficiency cores at will,
+    // which swings single-thread timings by ~15%; every timed thread asks
+    // for performance cores instead.
+    prefer_performance_cores();
+    let pool = |threads: usize| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .start_handler(|_| prefer_performance_cores())
+            .build()
+            .expect("worker pool")
+    };
+    let one = pool(1);
+    let all = pool(cli.threads);
     let runs = vec![
-        run_spellman_bulk(&cli, &texts),
-        run_spellman_single(&cli, &texts),
+        one.install(|| run_spellman_bulk(&cli, &texts, &prepare_config(1, cli.beam), "1 thread")),
+        one.install(|| run_spellman_single(&cli, &texts)),
         run_whichlang(&texts, &golds),
         run_lingua(&texts, &golds, false),
         run_lingua(&texts, &golds, true),
+        all.install(|| run_spellman_replicas(&cli, &texts)),
+        all.install(|| run_whichlang_parallel(&texts, &golds, cli.threads)),
+        run_spellman_bulk(&cli, &texts, &prepare_config(cli.threads, cli.beam), "svod threads"),
     ];
 
     println!(
-        "\n{:<20} {:>10} {:>14} {:>13} {:>10} {:>8}",
+        "\n{:<36} {:>10} {:>14} {:>13} {:>10} {:>8}",
         "tool", "supported", "supported-acc", "all-rows-acc", "µs/sample", "load"
     );
     for run in &runs {
@@ -180,7 +214,7 @@ fn main() {
         let all_acc = 100.0 * all_ok as f64 / run.preds.len().max(1) as f64;
         let us = run.elapsed_secs * 1e6 / run.preds.len().max(1) as f64;
         println!(
-            "{:<20} {:>7}/30 {:>13.2}% {:>12.2}% {:>10.1} {:>7.1}s",
+            "{:<36} {:>7}/30 {:>13.2}% {:>12.2}% {:>10.2} {:>7.1}s",
             run.name,
             run.supported,
             sup_acc,
@@ -207,7 +241,7 @@ fn main() {
                 let all_ok =
                     idxs.iter().filter(|i| run.preds[**i].as_deref() == Some(golds[**i])).count();
                 println!(
-                    "    {:<20} {:>6.2}% / {:>6.2}%",
+                    "    {:<36} {:>6.2}% / {:>6.2}%",
                     run.name,
                     100.0 * sup_ok as f64 / sup_rows.max(1) as f64,
                     100.0 * all_ok as f64 / idxs.len() as f64,
@@ -261,25 +295,53 @@ fn score(run: &RunResult, golds: &[&str]) -> (usize, usize, usize) {
     (sup_rows, sup_ok, all_ok)
 }
 
-fn run_spellman_bulk(cli: &Cli, texts: &[String]) -> RunResult {
-    let t = Instant::now();
-    let mut det = BulkDetector::load(&cli.model, cli.k, cli.max_batch).expect("load spellman model");
-    let load = t.elapsed().as_secs_f64();
+/// Ask the scheduler for performance cores (user-interactive QoS) on
+/// macOS; a no-op elsewhere.
+fn prefer_performance_cores() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: sets the calling thread's own QoS class; no pointers involved.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
+    }
+}
 
-    // Warm the compiled plan with one batch, then time the full pass.
-    let head: Vec<&str> = texts.iter().take(cli.max_batch.min(texts.len())).map(String::as_str).collect();
-    let _ = det.detect_batch(&head).expect("warmup");
+/// A spellman prepare configuration: the heuristics' thread split and, with
+/// `beam > 0`, a BEAM search of that width.
+fn prepare_config(threads: usize, beam: usize) -> PrepareConfig {
+    OptimizerConfig::builder()
+        .heuristics(HeuristicsConfig { thread_count: threads, ..Default::default() })
+        .strategy(if beam > 0 { OptStrategy::Beam { width: beam } } else { OptStrategy::Heuristic })
+        .build()
+        .into()
+}
 
-    let t = Instant::now();
+fn bulk_pass(det: &mut BulkDetector, texts: &[String], batch: usize) -> Vec<Option<String>> {
     let mut preds = Vec::with_capacity(texts.len());
-    for chunk in texts.chunks(cli.max_batch) {
+    for chunk in texts.chunks(batch) {
         let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
         for d in det.detect_batch(&refs).expect("spellman bulk detect") {
             preds.push(d.lang.map(|l| l.code().to_string()));
         }
     }
+    preds
+}
+
+/// One detector driven from the calling thread; `config` sets the plan's
+/// thread split (run it inside a one-thread pool for a single-core figure).
+fn run_spellman_bulk(cli: &Cli, texts: &[String], config: &PrepareConfig, label: &str) -> RunResult {
+    let t = Instant::now();
+    let mut det = BulkDetector::load_with_prepare_config(&cli.model, cli.k, cli.max_batch, config)
+        .expect("load spellman model");
+    let load = t.elapsed().as_secs_f64();
+
+    // Warm the compiled plans with one batch, then time the full pass.
+    let head = &texts[..cli.max_batch.min(texts.len())];
+    let _ = bulk_pass(&mut det, head, cli.max_batch);
+
+    let t = Instant::now();
+    let preds = bulk_pass(&mut det, texts, cli.max_batch);
     RunResult {
-        name: "spellman (bulk)".into(),
+        name: format!("spellman bulk ({label})"),
         supported: 30,
         load_secs: load,
         elapsed_secs: t.elapsed().as_secs_f64(),
@@ -288,9 +350,43 @@ fn run_spellman_bulk(cli: &Cli, texts: &[String]) -> RunResult {
     }
 }
 
+/// One-thread plans, one replica per worker of the current pool: each
+/// worker scores whole batches with its own replica (svod runs a kernel
+/// inline inside a rayon worker), and the ordered results are collected.
+fn run_spellman_replicas(cli: &Cli, texts: &[String]) -> RunResult {
+    // ~4 batches per worker for work-stealing balance; the plan is compiled
+    // at that batch, because a compiled plan scores all its rows, padded or
+    // not (one-thread kernels pay no launch cost, so small batches are fine).
+    let batch = cli.max_batch.min(texts.len().div_ceil(cli.threads * 4)).max(1);
+    let t = Instant::now();
+    let base = BulkDetector::load_with_prepare_config(&cli.model, cli.k, batch, &prepare_config(1, cli.beam))
+        .expect("load spellman model");
+    let load = t.elapsed().as_secs_f64();
+    let score = || -> Vec<Option<String>> {
+        texts
+            .par_chunks(batch)
+            .map_init(|| base.replicate().expect("replicate plan"), |det, chunk| bulk_pass(det, chunk, batch))
+            .flatten()
+            .collect()
+    };
+    let _ = score(); // warm every worker's replica
+    let t = Instant::now();
+    let preds = score();
+    RunResult {
+        name: format!("spellman replicas ({} threads)", cli.threads),
+        supported: 30,
+        load_secs: load,
+        elapsed_secs: t.elapsed().as_secs_f64(),
+        preds,
+        supports: supports_all,
+    }
+}
+
+/// `SingleDetector` with one-thread plans, called from the current pool.
 fn run_spellman_single(cli: &Cli, texts: &[String]) -> RunResult {
     let t = Instant::now();
-    let mut det = SingleDetector::load(&cli.model, cli.k).expect("load spellman model");
+    let mut det = SingleDetector::load_with_prepare_config(&cli.model, cli.k, &prepare_config(1, cli.beam))
+        .expect("load spellman model");
     let load = t.elapsed().as_secs_f64();
 
     for text in texts.iter().take(64) {
@@ -308,7 +404,7 @@ fn run_spellman_single(cli: &Cli, texts: &[String]) -> RunResult {
         })
         .collect();
     RunResult {
-        name: "spellman (single)".into(),
+        name: "spellman single (1 thread)".into(),
         supported: 30,
         load_secs: load,
         elapsed_secs: t.elapsed().as_secs_f64(),
@@ -344,7 +440,28 @@ fn run_whichlang(texts: &[String], golds: &[&str]) -> RunResult {
         })
         .collect();
     RunResult {
-        name: "whichlang 0.1".into(),
+        name: "whichlang 0.1 (1 thread)".into(),
+        supported: 30 - Lang::ALL.iter().filter(|l| whichlang_support(l.code()).is_none()).count(),
+        load_secs: 0.0,
+        elapsed_secs: t.elapsed().as_secs_f64(),
+        preds,
+        supports: supports_whichlang,
+    }
+}
+
+/// whichlang over the current pool (it is stateless, so a plain parallel
+/// map is its best all-cores shape).
+fn run_whichlang_parallel(texts: &[String], golds: &[&str], threads: usize) -> RunResult {
+    warmup_by_gold(texts, golds, supports_whichlang, |text| {
+        std::hint::black_box(whichlang::detect_language(text));
+    });
+    let t = Instant::now();
+    let preds = texts
+        .par_iter()
+        .map(|text| Some(whichlang::detect_language(std::hint::black_box(text)).three_letter_code().to_string()))
+        .collect();
+    RunResult {
+        name: format!("whichlang 0.1 ({threads} threads)"),
         supported: 30 - Lang::ALL.iter().filter(|l| whichlang_support(l.code()).is_none()).count(),
         load_secs: 0.0,
         elapsed_secs: t.elapsed().as_secs_f64(),
@@ -378,7 +495,7 @@ fn run_lingua(texts: &[String], golds: &[&str], low: bool) -> RunResult {
         })
         .collect();
     RunResult {
-        name: format!("lingua 1.8 ({})", if low { "low acc" } else { "high acc" }),
+        name: format!("lingua 1.8 ({}, 1 thread)", if low { "low acc" } else { "high acc" }),
         supported: lingua_languages().len(),
         load_secs: load,
         elapsed_secs: t.elapsed().as_secs_f64(),

@@ -61,58 +61,77 @@ pub enum Route {
     Unknown,
 }
 
-/// Route text by dominant script. Kana is decisive for Japanese even when
-/// kanji dominates the letter count; otherwise the script with the most
-/// letters wins. Mixed-script ties go to the later candidate in declaration
-/// order (Han > Cyrillic > Latin): a document split between scripts more
-/// often carries the rarer script's unique words.
-pub fn route(text: &str) -> Route {
-    let mut counts: [usize; 6] = [0; 6];
-    let script_index = |s: Script| match s {
-        Script::Latin => 0,
-        Script::Cyrillic => 1,
-        Script::Devanagari => 2,
-        Script::Arabic => 3,
-        Script::Kana => 4,
-        Script::Han => 5,
-    };
+/// Letters per supported script, accumulated one character at a time —
+/// by [`route`] over a whole text, or by featurization during its own
+/// character walk (`features::push_signed_indices_routed`), which then
+/// needs no second pass over the text.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScriptCounts([usize; 6]);
 
-    for c in text.chars() {
+impl ScriptCounts {
+    /// Count one character (no-op for characters outside every supported
+    /// script: digits, punctuation, whitespace, …).
+    #[inline(always)]
+    pub fn add(&mut self, c: char) {
         if let Some(script) = spellman_language::char_script(c) {
-            counts[script_index(script)] += 1;
+            self.0[match script {
+                Script::Latin => 0,
+                Script::Cyrillic => 1,
+                Script::Devanagari => 2,
+                Script::Arabic => 3,
+                Script::Kana => 4,
+                Script::Han => 5,
+            }] += 1;
         }
     }
 
-    let [latin, cyrillic, devanagari, arabic, kana, han] = counts;
+    /// Where these counts send the text. Kana is decisive for Japanese
+    /// even when kanji dominates the letter count; otherwise the script
+    /// with the most letters wins. Mixed-script ties go to the later
+    /// candidate in declaration order (Han > Cyrillic > Latin): a document
+    /// split between scripts more often carries the rarer script's unique
+    /// words.
+    pub fn route(&self) -> Route {
+        let [latin, cyrillic, devanagari, arabic, kana, han] = self.0;
 
-    if kana > 0 {
-        return Route::Direct(Lang::Jpn);
+        if kana > 0 {
+            return Route::Direct(Lang::Jpn);
+        }
+        let candidates = [
+            (Script::Latin, latin),
+            (Script::Cyrillic, cyrillic),
+            (Script::Han, han),
+        ];
+        if let Some((best, _)) = candidates
+            .iter()
+            .copied()
+            .max_by_key(|(_, n)| *n)
+            .filter(|(_, n)| *n > 0)
+        {
+            return match best {
+                Script::Latin => Route::Group(ScriptGroup::Latin),
+                Script::Cyrillic => Route::Group(ScriptGroup::Cyrillic),
+                Script::Han => Route::Direct(Lang::Cmn),
+                _ => unreachable!("only Latin/Cyrillic/Han are candidates"),
+            };
+        }
+        if devanagari > 0 {
+            return Route::Direct(Lang::Hin);
+        }
+        if arabic > 0 {
+            return Route::Direct(Lang::Ara);
+        }
+        Route::Unknown
     }
-    let candidates = [
-        (Script::Latin, latin),
-        (Script::Cyrillic, cyrillic),
-        (Script::Han, han),
-    ];
-    if let Some((best, _)) = candidates
-        .iter()
-        .copied()
-        .max_by_key(|(_, n)| *n)
-        .filter(|(_, n)| *n > 0)
-    {
-        return match best {
-            Script::Latin => Route::Group(ScriptGroup::Latin),
-            Script::Cyrillic => Route::Group(ScriptGroup::Cyrillic),
-            Script::Han => Route::Direct(Lang::Cmn),
-            _ => unreachable!("only Latin/Cyrillic/Han are candidates"),
-        };
+}
+
+/// Route text by dominant script (see [`ScriptCounts::route`]).
+pub fn route(text: &str) -> Route {
+    let mut counts = ScriptCounts::default();
+    for c in text.chars() {
+        counts.add(c);
     }
-    if devanagari > 0 {
-        return Route::Direct(Lang::Hin);
-    }
-    if arabic > 0 {
-        return Route::Direct(Lang::Ara);
-    }
-    Route::Unknown
+    counts.route()
 }
 
 #[cfg(test)]

@@ -25,8 +25,10 @@ struct PlanArgs {
     /// Per-document token budget K per plan row; longer documents are scored in full (chunk-accumulated).
     #[arg(long, default_value_t = 1024)]
     k: usize,
-    /// Batch size; documents are scored in chunks of this many.
-    #[arg(long, default_value_t = 1024)]
+    /// Batch size; documents are scored in chunks of this many. Larger is
+    /// faster per document (each execute pays a fixed launch cost); 4096 is
+    /// the compiled limit.
+    #[arg(long, default_value_t = 4096)]
     max_batch: usize,
 }
 

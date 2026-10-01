@@ -150,7 +150,7 @@ proportional mix of both channels in long documents. Words dropped by the
 Measured effect (same data, same training config): held-out 98.15 → 98.28,
 Tatoeba 98.32 → 98.66, Tatoeba single-word rung 66.9 → 68.5, wild tweets
 92.35 → 93.73. Token count grows ~10% (~2 keys per word); bulk latency is
-unchanged (3.4–3.5 µs/sample on M1 Pro).
+unchanged.
 
 ## Feature hashing
 
@@ -200,7 +200,8 @@ tokens → signed bucket ids → E [D+1, dim] → mean-pool → Linear(dim, C) �
   scores — verified failure: `"sweatshirt"` alone scored bul 1.0. With
   zero-init, untrained buckets fold to exactly-zero logits.
 - Trained in f32 (PyTorch, AdamW, linear LR decay to zero across epochs);
-  exported in f16.
+  the fold is rounded to f16 once and stored as int8 with per-column
+  scales.
 
 ### The algebraic fold
 
@@ -244,19 +245,23 @@ stale model can't be silently scored with the wrong tokenizer. `theta` is
 the calibrated confidence threshold (5th percentile of validation
 confidence): below it, `Detection::is_uncertain` is set.
 
-**Storage precision is decoupled from compute.** `quant` declares how `P`
-is stored — `float16` (no scales), or `int8`/`fp8e4m3` with a f32
-`scales` tensor per bucket row or per language column. The loader
-dequantizes into the canonical table (`resolve_table` is the single place
-that knows schemes), so the runtime graph and every tool are unchanged;
-`spellman-train train --store` gates each scheme against validation accuracy at
-export. Measured on the shipped model: int8 and fp8 both land within
-±0.02pp on both referees while roughly halving the artifact (3.9–4.5MB
-vs 7.9MB). True int8 *compute* was prototyped and rejected on evidence:
-the i8→i16→i32 cast chain that svod's type lattice forces wins big
-without a scheduler (−40..55% execute-only) but never beats the f16
-graph under the beam scheduler at any width tested (BEAM 2/4/8;
-`examples/int8_bench.rs` measures the split).
+**One storage format: int8 with per-column scales.** `quant` must be
+`{"dtype": "int8", "scheme": "column"}`: `P` is int8 and a `scales`
+tensor holds one f32 scale per language column. Column scales factor out
+of the token sum (`Σ s_c·q = s_c·Σ q`), so the runtime gathers and sums
+the int8 table directly (exact in i32) and applies the scales once per
+document at read-out. Export quantizes the f16-rounded fold and gates the
+result against validation accuracy (`--quant-max-drop`, default 0.2pp).
+
+History: f16, row-scaled int8 and fp8 stores were supported too, all
+dequantized into an f16 table. int8 and fp8 landed within ±0.02pp of f16
+on both referees at half the size; int8 *compute* — first rejected
+because svod's i8→i16→i32 cast chain never beat f16 under BEAM — won
+once the plans compiled a fixed batch and svod (alpha.7) summed i8 in i32
+directly: ~1.4× end to end, faster on every path measured. With nothing
+left in favor of the other formats they were dropped; the loader rejects
+them and `spellman-train quantize` converts an old artifact
+bit-identically to the int8-col export.
 
 ## Runtime
 
@@ -264,16 +269,14 @@ All inference runs through compiled [svod] execution plans
 (`crates/spellman-detector/src/jit.rs`); weights land on the default
 device at load time (`svod_tensor::set_default_device` for GPU). Models
 load from a local directory or straight from the Hugging Face Hub
-(`BulkDetector::from_hub` / `from_hub_variant`, the `hub` module —
-same wiring as svod's own models; quantized variants live in
-subdirectories of the default repo).
+(`BulkDetector::from_hub`, the `hub` module — same wiring as svod's own
+models).
 
-The graph is deliberately minimal — gather and one reduction, pure fp16
-end to end (ARM/NEON native on Apple Silicon; no cast kernels in the
-replayed graph):
+The graph is deliberately minimal — an int8 gather and one reduction,
+exact in i32:
 
 ```text
-idx [b, K] i32 ──gather──> table rows [b, K, C] f16 ──sum over K──> [b, C] f16
+idx [b, K] i32 ──gather──> table rows [b, K, C] i8 ──sum over K──> [b, C] i32
 ```
 
 Shape specialization is the core trick:
@@ -299,18 +302,30 @@ Shape specialization is the core trick:
   so a batch of single words on a K=1024 plan was ~98% padding. The
   ladder's plans share one realized ±P table. Fragment-level scoring
   (the `assess` word/pair/triple ladder) went from 10.8 to 0.8 µs/row.
+- **The doubled `[P; -P]` table stays** (signed index = `bucket` or
+  `D+1+bucket` selects the block). A `P`-only table with the sign decoded
+  in the graph was tried: decoding inside the gather kernel (`where` on
+  the gathered rows) broke its fused widen-and-add (~40% slower); a
+  materialized decode (`contiguous()`) plus a ±1 multiply made one-thread
+  plans and replicas ~6–7% faster, but the default svod-threaded bulk path
+  3.4× slower (0.96 → 3.28 µs/sample, held-out, int8-col, batch 4096, M4
+  Max) — reverted.
 - **Mean-pooling, bias, softmax, argmax run host-side at read-out** (30
   floats per document): featurization already knows each document's exact
-  token count, so the graph needs no count computation. The single f32
-  conversion happens there, via a hand-rolled fp16→f32 widening.
+  token count, so the graph needs no count computation. The i32 sums
+  widen to f32 there, each multiplied by its column scale.
 
-**Featurization:** one indexed rayon task per row hashes the full token
-stream (the exact count picks the rung and drives the mean-pool), then an
-indexed parallel copy lands the rows in the plan's host-mapped input
-buffer through a typed view. The earlier `par_bridge` streaming write
-was replaced on purpose: a bridged iterator is a mutex plus a
-`yield_now` spin per item, and 512 tiny rows over 32 workers showed up
-as ~1,300 `sched_yield` calls per batch.
+**Featurization:** one indexed rayon task per row walks the text once:
+the packer emits every n-gram key into a per-thread buffer while each
+character's script is counted for routing, then a vectorized loop hashes
+the whole key slice into signed indices. Script-routed rows stop there;
+the rest keep their full token stream (the exact count picks the rung and
+drives the mean-pool), and an indexed parallel copy lands them in the
+plan's host-mapped input buffer through a typed view. Inside a rayon
+worker (one replica per worker) all of this runs inline instead. An
+earlier `par_bridge` streaming write was dropped: a bridged iterator is a
+mutex plus a `yield_now` spin per item, and 512 tiny rows over 32 workers
+showed up as ~1,300 `sched_yield` calls per batch.
 
 Measured on the shipped model (Apple Silicon, k=1024, full held-out
 mix): **4.6 µs/sample bulk** (~215k docs/s) at `BEAM=16` and **3.7 µs
@@ -348,11 +363,11 @@ Measured decisions, in the order they pay off:
 | algebraic fold P = E·W | scoring = lookup + add, no matmul (whichlang-class throughput) |
 | zero-init embeddings | untrained buckets → exactly-zero logits (fixed `"sweatshirt"` → bul 1.0) |
 | sentinel canonicalization | wild referee 72.49% → 92.35%; ~30 neutral n-grams vs ~125 per URL |
-| precision-decoupled storage (int8/fp8 `P` + scales) | −50% artifact at ±0.02pp; int8 *compute* rejected: the cast chain wins only scheduler-less, never under beam (2/4/8 measured) |
+| int8 `P` with per-column scales, scored in int8 | −50% artifact vs f16 at ±0.02pp; ~1.4× faster end to end; the only supported store |
 | hand word classifier | 29 ns/word vs 67 ns (DFA) / 83 ns (PikeVM) |
 | high-bit buckets + fmix32 | chi²/dof 1.006 at D = 2^17; XXH3 rejected |
 | constant-K JIT plan | 4.6 µs/sample bulk (BEAM=16), 3.7 µs single-doc (BEAM≥4); beam = ~2× bulk / ~6× single over the default scheduler |
-| fp16 end-to-end graph | no cast kernels on the replay path; exact per-value loads, wide LID logit margins |
+| i8 gather, exact i32 sum | no rounding in the sum; scales applied once per document at read-out |
 | zero-copy featurization | rayon writes indices directly into the plan's host-mapped buffer |
 | numpy-vectorized training featurizer | batch featurization asserted bit-identical to the scalar contract |
 

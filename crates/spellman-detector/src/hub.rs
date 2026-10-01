@@ -3,14 +3,13 @@
 //! sync API), then load from the snapshot directory. A warmed cache means
 //! the second call is a pure local load.
 //!
-//! The default repo ships the same model in several storage formats
-//! (see the design doc's precision section): the f16 table at the repo
-//! root and quantized variants in subdirectories —
-//! `from_hub_variant("int8-col", …)` fetches the 3.9MB int8 artifact.
+//! The default repo ships one model at its root, in the runtime's only
+//! storage format (int8 with per-column scales, ~8 MB at 2^18). Other
+//! repos may still keep a model under a subdirectory (`hf:owner/repo/dir`).
 
 use std::path::PathBuf;
 
-/// Default Hub repo: f16 at the root, quantized variants in subdirs.
+/// Default Hub repo: the int8-col model at the root.
 pub const DEFAULT_HUB_REPO: &str = "vpermilp/spellman";
 
 #[derive(Debug, snafu::Snafu)]

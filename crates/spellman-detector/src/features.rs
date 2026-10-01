@@ -279,8 +279,25 @@ pub fn token_keys(text: &str, cfg: &FeatureConfig) -> Vec<u64> {
 ///
 /// Emission order affects nothing observable — the model consumes the token
 /// multiset (float summation order shifts within rounding noise).
-pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
-    let n_max = cfg.n_max as usize;
+pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, f: F) {
+    for_each_key_observed(text, cfg, f, |_| {});
+}
+
+/// [`for_each_key`] that also hands every character of `text` that can
+/// carry a script — each word's original (pre-lowercasing) characters,
+/// sentinel words included — to `observe`, so a caller can count scripts in
+/// the same walk instead of decoding the text twice. Whitespace and a
+/// stripped leading `#` are not observed; neither belongs to a script.
+#[inline]
+fn for_each_key_observed<F: FnMut(u64), O: FnMut(char)>(
+    text: &str,
+    cfg: &FeatureConfig,
+    mut f: F,
+    mut observe: O,
+) {
+    // Clamped to the tag table so the per-key `N_TAG[n]` needs no check.
+    let n_max = (cfg.n_max as usize).min(N_TAG.len() - 1);
+    let n_min = cfg.n_min as usize;
     let mut r: u64 = 0;
     let mut len: usize = 0;
     // Hash of the previous retained word (None before the first): the
@@ -289,30 +306,34 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
     // sequence of retained words.
     let mut prev_word: Option<u64> = None;
 
+    // Runs once per character: always inlined, with a plain range over the
+    // window lengths, so the packer state stays in registers (an outlined
+    // `feed` saved/restored 12 registers per character and stepped a
+    // `Take<Enumerate<Iter>>` through the stack, `nth` call included).
+    #[inline(always)]
+    // The indexed loop is the point: the `enumerate().take().skip()` form
+    // clippy suggests is the one that compiled to an outlined `nth` call.
+    #[allow(clippy::needless_range_loop)]
     fn feed<F: FnMut(u64)>(
         r: &mut u64,
         len: &mut usize,
         c: u64,
-        cfg: &FeatureConfig,
+        n_min: usize,
         n_max: usize,
         f: &mut F,
     ) {
         *r = (*r << CP_BITS) | (c & CP_MASK);
         *len += 1;
-        let upper = n_max.min(*len);
-        for (n, tag) in N_TAG
-            .iter()
-            .enumerate()
-            .take(upper + 1)
-            .skip(cfg.n_min as usize)
-        {
+        // Half-open on purpose: `RangeInclusive` carries an exhausted flag
+        // that compiled to ~86 instructions of loop control here.
+        for n in n_min..n_max.min(*len) + 1 {
             let window = match n {
                 1 => *r & M1,
                 2 => *r & M2,
                 3 => *r & M3,
                 _ => *r, // 4- and 5-gram windows wrap; window is the full register
             };
-            f(window ^ tag);
+            f(window ^ N_TAG[n]);
         }
     }
 
@@ -339,22 +360,27 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
             WordClass::Num => Some(SENTINEL_NUM),
         };
         let mut h: u64 = FNV_OFFSET;
-        feed(&mut r, &mut len, BOW as u64, cfg, n_max, &mut f);
+        feed(&mut r, &mut len, BOW as u64, n_min, n_max, &mut f);
         match sentinel {
             Some(s) => {
-                feed(&mut r, &mut len, s as u64, cfg, n_max, &mut f);
+                // The word packs as one sentinel, but its letters still
+                // count toward the text's script (an `@ник` mention is
+                // Cyrillic evidence for routing).
+                word.chars().for_each(&mut observe);
+                feed(&mut r, &mut len, s as u64, n_min, n_max, &mut f);
                 h = fnv_step(h, s as u64);
             }
             None => {
                 for c in word.chars() {
+                    observe(c);
                     match fast_lower(c) {
                         Some(lc) => {
-                            feed(&mut r, &mut len, lc as u64, cfg, n_max, &mut f);
+                            feed(&mut r, &mut len, lc as u64, n_min, n_max, &mut f);
                             h = fnv_step(h, lc as u64);
                         }
                         None => {
                             for lc in c.to_lowercase() {
-                                feed(&mut r, &mut len, lc as u64, cfg, n_max, &mut f);
+                                feed(&mut r, &mut len, lc as u64, n_min, n_max, &mut f);
                                 h = fnv_step(h, lc as u64);
                             }
                         }
@@ -362,7 +388,7 @@ pub fn for_each_key<F: FnMut(u64)>(text: &str, cfg: &FeatureConfig, mut f: F) {
                 }
             }
         }
-        feed(&mut r, &mut len, EOW as u64, cfg, n_max, &mut f);
+        feed(&mut r, &mut len, EOW as u64, n_min, n_max, &mut f);
         // Lexical channel, interleaved after the word's char n-grams: the
         // whole-word key, then the adjacent-word bigram key (none before the
         // first word). Interleaving keeps this streaming — no word-hash
@@ -432,52 +458,18 @@ pub fn for_each_bucket<F: FnMut(u32, bool)>(
     });
 }
 
-/// Stream up to `k` signed bucket tokens of `text` directly into `dst` as
-/// signed table indices — `bucket`, or `D+1+bucket` for negative tokens (the
-/// ±P doubled-table gather layout the JIT plans consume) — returning the
-/// number written. Zero-allocation single pass over the text; the result is
-/// identical to iterating [`bucket_tokens`] and breaking at `k`, minus the
-/// token-vector materialization.
-pub fn fill_signed_indices(
-    text: &str,
-    cfg: &FeatureConfig,
-    hasher: &crate::hash::FeatureHasher,
-    log2_d: u32,
-    k: usize,
-    dst: &mut [i32],
-) -> usize {
-    // Keys are hashed one 8-block at a time (auto-vectorized under an
-    // SIMD-enabled build); the (rare) block flushes are outlined so the
-    // per-key emission loop stays minimal. A partial final block and the
-    // k-truncation zone run scalar.
-    let mut out = 0usize;
-    let mut buf = [0u64; 8];
-    let mut nbuf = 0usize;
-    for_each_key(text, cfg, |key| {
-        if out == k {
-            return;
-        }
-        buf[nbuf] = key;
-        nbuf += 1;
-        if nbuf == 8 {
-            nbuf = 0;
-            flush_block(hasher, &buf, log2_d, k, dst, &mut out);
-        }
-    });
-    for &key in &buf[..nbuf] {
-        if out == k {
-            break;
-        }
-        dst[out] = hasher.signed_index(key, log2_d);
-        out += 1;
-    }
-    out
+thread_local! {
+    /// Per-thread packed-key buffer for the two-pass featurization.
+    static KEYS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Append every signed bucket token of `text` to `out` (no truncation):
-/// the [`fill_signed_indices`] emission loop over a growable row, for
-/// callers that need the exact token count before choosing a plan K and
-/// that chunk long rows themselves.
+/// the row the detectors score, for callers that need the exact token count
+/// before choosing a plan K and that chunk long rows themselves.
+///
+/// Two passes over a per-thread key buffer: the packer emits every key (a
+/// shift, a mask and an xor each), then [`crate::hash::FeatureHasher::signed_indices`]
+/// hashes the whole slice in one vectorized loop straight into `out`.
 pub fn push_signed_indices(
     text: &str,
     cfg: &FeatureConfig,
@@ -485,49 +477,43 @@ pub fn push_signed_indices(
     log2_d: u32,
     out: &mut Vec<i32>,
 ) {
-    let mut buf = [0u64; 8];
-    let mut nbuf = 0usize;
-    let mut block = [0i32; 8];
-    for_each_key(text, cfg, |key| {
-        buf[nbuf] = key;
-        nbuf += 1;
-        if nbuf == 8 {
-            nbuf = 0;
-            hasher.signed_index_block(&buf, log2_d, &mut block);
-            out.extend_from_slice(&block);
-        }
+    KEYS.with_borrow_mut(|keys| {
+        keys.clear();
+        // ~2.7 keys per input byte on the held-out mix.
+        keys.reserve(text.len() * 3);
+        for_each_key(text, cfg, |key| keys.push(key));
+        let start = out.len();
+        out.resize(start + keys.len(), 0);
+        hasher.signed_indices(keys, log2_d, &mut out[start..]);
     });
-    for &key in &buf[..nbuf] {
-        out.push(hasher.signed_index(key, log2_d));
-    }
 }
 
-/// Flush one full 8-key block through [`FeatureHasher::signed_index_block`],
-/// scalar with k-truncation when the row tail is shorter than a block.
-/// Outlined (`inline(never)`) on purpose — it runs once per eight keys, and
-/// keeping its bulk out of the emission loop is measurably worth the call.
-#[inline(never)]
-fn flush_block(
+/// [`push_signed_indices`] fused with routing: counts each character's
+/// script during the featurization walk and returns the text's
+/// [`Route`](crate::route::Route) — identical to
+/// [`route`](crate::route::route) over the same text — appending indices to
+/// `out` only when the text goes to a model (`Route::Group`). Saves the
+/// separate routing pass over the text.
+pub fn push_signed_indices_routed(
+    text: &str,
+    cfg: &FeatureConfig,
     hasher: &crate::hash::FeatureHasher,
-    buf: &[u64; 8],
     log2_d: u32,
-    k: usize,
-    dst: &mut [i32],
-    out: &mut usize,
-) {
-    if *out + 8 <= k {
-        hasher.signed_index_block(buf, log2_d, &mut dst[*out..]);
-        *out += 8;
-        return;
-    }
-    // Truncation zone: the row tail is shorter than a block.
-    for &key in buf {
-        if *out == k {
-            break;
+    out: &mut Vec<i32>,
+) -> crate::route::Route {
+    let mut scripts = crate::route::ScriptCounts::default();
+    KEYS.with_borrow_mut(|keys| {
+        keys.clear();
+        keys.reserve(text.len() * 3);
+        for_each_key_observed(text, cfg, |key| keys.push(key), |c| scripts.add(c));
+        let route = scripts.route();
+        if matches!(route, crate::route::Route::Group(_)) {
+            let start = out.len();
+            out.resize(start + keys.len(), 0);
+            hasher.signed_indices(keys, log2_d, &mut out[start..]);
         }
-        dst[*out] = hasher.signed_index(key, log2_d);
-        *out += 1;
-    }
+        route
+    })
 }
 
 #[cfg(test)]
@@ -737,12 +723,12 @@ mod tests {
     }
 
     #[test]
-    fn fill_signed_indices_matches_bucket_tokens() {
+    fn push_signed_indices_matches_bucket_tokens() {
         let cfg = FeatureConfig::default();
         let log2_d = 17u32;
         let d = 1i32 << log2_d;
-        // Every hash id: fmix32 rides the vector block path, the others the
-        // scalar fallback — the fill contract is id-independent.
+        // Every hash id: fmix32 rides the vectorized slice hasher, the
+        // others the per-key fallback.
         for id in crate::hash::HashId::ALL {
             let hasher = crate::hash::FeatureHasher {
                 id,
@@ -765,19 +751,10 @@ mod tests {
                         }
                     })
                     .collect();
-                // Untruncated fill reproduces the whole sequence.
-                let mut dst = vec![0i32; toks.len() + 5];
-                let n = fill_signed_indices(text, &cfg, &hasher, log2_d, dst.len(), &mut dst);
-                assert_eq!(n, expect.len());
-                assert_eq!(&dst[..n], &expect[..], "mismatch for {text:?} ({id:?})");
-                // Truncation: every k up past the block size keeps exactly
-                // the first k signed indices (covers block-boundary ks).
-                for k in 0..=expect.len().min(17) {
-                    let mut small = vec![0i32; k];
-                    let m = fill_signed_indices(text, &cfg, &hasher, log2_d, k, &mut small);
-                    assert_eq!(m, k.min(expect.len()));
-                    assert_eq!(&small[..m], &expect[..m]);
-                }
+                // Appends after whatever `out` already holds.
+                let mut out = vec![-1];
+                push_signed_indices(text, &cfg, &hasher, log2_d, &mut out);
+                assert_eq!(&out[1..], &expect[..], "mismatch for {text:?} ({id:?})");
             }
         }
     }
@@ -851,6 +828,44 @@ mod tests {
         let mixed = token_keys("Привет @nick пока", &cfg1);
         let plain = token_keys("Привет @x пока", &cfg1);
         assert_eq!(mixed, plain);
+    }
+
+    #[test]
+    fn routed_featurization_matches_route_and_plain_featurization() {
+        // The fused walk must route exactly like `route(text)` — including
+        // letters inside sentinel words and case-folding expansions — and,
+        // when the text goes to a model, emit exactly push_signed_indices.
+        let cfg = FeatureConfig::default();
+        let hasher = crate::hash::FeatureHasher::default();
+        for text in [
+            "Привет, как дела?",
+            "@привет hello",
+            "@ник @nick @user",
+            "İstanbul İZMİR",
+            "#красноярск #COVID2020 #",
+            "https://t.co/xyz test@mail.ru 2020 3.5.2",
+            "Привіт hello мир",
+            "12345 !!!",
+            "",
+            "   \t ",
+            "東京駅へ行くのが好きですか",
+            "北京是中国的首都 и немного русского",
+            "नमस्ते दुनिया",
+            "مرحبا بالعالم",
+            "こんにちは　世界",
+            "Hello, Мир! Hola, mundo.",
+        ] {
+            let mut routed = Vec::new();
+            let route = push_signed_indices_routed(text, &cfg, &hasher, 17, &mut routed);
+            assert_eq!(route, crate::route::route(text), "route for {text:?}");
+            if matches!(route, crate::route::Route::Group(_)) {
+                let mut plain = Vec::new();
+                push_signed_indices(text, &cfg, &hasher, 17, &mut plain);
+                assert_eq!(routed, plain, "indices for {text:?}");
+            } else {
+                assert!(routed.is_empty(), "no indices for {text:?}");
+            }
+        }
     }
 
     #[test]

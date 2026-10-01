@@ -138,8 +138,35 @@ svod JIT plans, BEAM=16, k=1024 (top rung), batch 512, Tatoeba eval —
 | hardware | model | bulk | single document |
 |---|---|---|---|
 | AMD Ryzen 9 7950X3D | v14 (2^18) | 1.9 µs/sample (~525k docs/s) | 4.3 µs/doc |
-| Apple M1 Pro (before the batch/K rework) | v12 (2^17) | 3.6 µs/sample (~280k docs/s) | 3.8 µs/doc |
 | AMD AI 395 Max (before the batch/K rework) | v12 (2^17) | 1.2 µs/sample (~830k docs/s) | 13.0 µs/doc |
+
+On the Apple M4 Max (int8 with per-column scales, the runtime's only
+store — see the design doc): `lid-bench` against
+`train/tatoeba_eval.tsv` and the 368,507-row held-out mix
+(`model/eval_test.tsv`), BEAM=16, timed threads on performance cores;
+ranges over two runs. The one-thread and replica rows run with
+`SVOD_THREADS=1` (BEAM tunes those plans for one thread), the
+svod-threaded row without it:
+
+| run | Tatoeba | held-out mix |
+|---|---|---|
+| bulk, svod-threaded kernel, 4096-row batches | 0.75 µs/sample | 0.97–1.00 µs/sample |
+| bulk, one single-thread replica per core (14) | 0.18–0.21 µs/sample | 0.44–0.50 µs/sample |
+| bulk, one thread | 1.14–1.40 µs/sample | 3.22–3.41 µs/sample |
+| single document, one thread | 2.59–2.63 µs/doc | 6.52–6.84 µs/doc |
+| whichlang 0.1, one thread (10/30 classes) | 0.35 µs/sample | 1.13–1.21 µs/sample |
+| whichlang 0.1, 14 threads | 0.04 µs/sample | 0.12–0.16 µs/sample |
+| lingua 1.8 high accuracy, one thread (17/30) | 98.5–102 µs/sample | 193–202 µs/sample |
+
+Replicas beat the svod-threaded kernel because every threaded execute
+pays a fixed launch cost (~85–90 µs on 14 threads) that single-thread
+replicas never do. Called from inside a rayon worker — replicas, or the
+one-thread rows — `detect_batch` also runs its host work inline (nested
+`par_iter`s there let workers stack other replicas' batches on top of
+their own) and picks the rung with the least gathered work, since an
+inline kernel pays no launch cost. The one-thread rows are the
+like-for-like comparison with whichlang and lingua, which `lid-bench`
+runs on one thread.
 
 Same box, same settings, other inputs: the 719k-row held-out test split
 (longer, mixed-register texts) runs at 2.9 µs/sample and a 1M-row file
@@ -159,11 +186,10 @@ default plan now runs 2.0 µs/sample. Since svod 0.1.0-alpha.5 the beam search r
 separate helper process: `cargo install svod-tensor --bin
 svod-beam-worker` and point `SVOD_BEAM_WORKER` at the installed binary,
 otherwise `BEAM=16` fails at prepare time with "BEAM helper is
-unavailable" (the heuristic default needs nothing). The 2^18 table costs nothing measurable on the 7950X3D:
-the v12-era 2^17 model times identically (3.5 µs) on the same box, and
-the int8-row root and f16 store time identically too (the loader
-dequantizes once). Scoring is pure table lookups after the algebraic
-fold `P = E·W` — no embedding gathers, no matmul. fmix32 bucket spread
+unavailable" (the heuristic default needs nothing). The 2^18 table
+costs nothing measurable on the 7950X3D: the v12-era 2^17 model times
+identically (3.5 µs) on the same box. Scoring is pure table lookups
+after the algebraic fold `P = E·W` — no embedding gathers, no matmul. fmix32 bucket spread
 on real n-grams: chi²/dof ≈ 1.006 (uniform ≈ 1.0).
 
 [whichlang]: https://github.com/quickwit-oss/whichlang
