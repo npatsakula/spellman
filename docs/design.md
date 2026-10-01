@@ -315,13 +315,17 @@ Shape specialization is the core trick:
   token count, so the graph needs no count computation. The i32 sums
   widen to f32 there, each multiplied by its column scale.
 
-**Featurization:** one indexed rayon task per row hashes the full token
-stream (the exact count picks the rung and drives the mean-pool), then an
-indexed parallel copy lands the rows in the plan's host-mapped input
-buffer through a typed view. The earlier `par_bridge` streaming write
-was replaced on purpose: a bridged iterator is a mutex plus a
-`yield_now` spin per item, and 512 tiny rows over 32 workers showed up
-as ~1,300 `sched_yield` calls per batch.
+**Featurization:** one indexed rayon task per row walks the text once:
+the packer emits every n-gram key into a per-thread buffer while each
+character's script is counted for routing, then a vectorized loop hashes
+the whole key slice into signed indices. Script-routed rows stop there;
+the rest keep their full token stream (the exact count picks the rung and
+drives the mean-pool), and an indexed parallel copy lands them in the
+plan's host-mapped input buffer through a typed view. Inside a rayon
+worker (one replica per worker) all of this runs inline instead. An
+earlier `par_bridge` streaming write was dropped: a bridged iterator is a
+mutex plus a `yield_now` spin per item, and 512 tiny rows over 32 workers
+showed up as ~1,300 `sched_yield` calls per batch.
 
 Measured on the shipped model (Apple Silicon, k=1024, full held-out
 mix): **4.6 µs/sample bulk** (~215k docs/s) at `BEAM=16` and **3.7 µs

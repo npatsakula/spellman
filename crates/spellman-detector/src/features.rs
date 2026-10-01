@@ -458,48 +458,6 @@ pub fn for_each_bucket<F: FnMut(u32, bool)>(
     });
 }
 
-/// Stream up to `k` signed bucket tokens of `text` directly into `dst` as
-/// signed table indices — `bucket`, or `D+1+bucket` for negative tokens (the
-/// ±P doubled-table gather layout the JIT plans consume) — returning the
-/// number written. Zero-allocation single pass over the text; the result is
-/// identical to iterating [`bucket_tokens`] and breaking at `k`, minus the
-/// token-vector materialization.
-pub fn fill_signed_indices(
-    text: &str,
-    cfg: &FeatureConfig,
-    hasher: &crate::hash::FeatureHasher,
-    log2_d: u32,
-    k: usize,
-    dst: &mut [i32],
-) -> usize {
-    // Keys are hashed one 8-block at a time (auto-vectorized under an
-    // SIMD-enabled build); the (rare) block flushes are outlined so the
-    // per-key emission loop stays minimal. A partial final block and the
-    // k-truncation zone run scalar.
-    let mut out = 0usize;
-    let mut buf = [0u64; 8];
-    let mut nbuf = 0usize;
-    for_each_key(text, cfg, |key| {
-        if out == k {
-            return;
-        }
-        buf[nbuf] = key;
-        nbuf += 1;
-        if nbuf == 8 {
-            nbuf = 0;
-            flush_block(hasher, &buf, log2_d, k, dst, &mut out);
-        }
-    });
-    for &key in &buf[..nbuf] {
-        if out == k {
-            break;
-        }
-        dst[out] = hasher.signed_index(key, log2_d);
-        out += 1;
-    }
-    out
-}
-
 thread_local! {
     /// Per-thread packed-key buffer for the two-pass featurization.
     static KEYS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -511,8 +469,7 @@ thread_local! {
 ///
 /// Two passes over a per-thread key buffer: the packer emits every key (a
 /// shift, a mask and an xor each), then [`crate::hash::FeatureHasher::signed_indices`]
-/// hashes the whole slice in one vectorized loop straight into `out` —
-/// instead of an 8-key buffer flushed through a hash call and an extend.
+/// hashes the whole slice in one vectorized loop straight into `out`.
 pub fn push_signed_indices(
     text: &str,
     cfg: &FeatureConfig,
@@ -557,34 +514,6 @@ pub fn push_signed_indices_routed(
         }
         route
     })
-}
-
-/// Flush one full 8-key block through [`FeatureHasher::signed_index_block`],
-/// scalar with k-truncation when the row tail is shorter than a block.
-/// Outlined (`inline(never)`) on purpose — it runs once per eight keys, and
-/// keeping its bulk out of the emission loop is measurably worth the call.
-#[inline(never)]
-fn flush_block(
-    hasher: &crate::hash::FeatureHasher,
-    buf: &[u64; 8],
-    log2_d: u32,
-    k: usize,
-    dst: &mut [i32],
-    out: &mut usize,
-) {
-    if *out + 8 <= k {
-        hasher.signed_index_block(buf, log2_d, &mut dst[*out..]);
-        *out += 8;
-        return;
-    }
-    // Truncation zone: the row tail is shorter than a block.
-    for &key in buf {
-        if *out == k {
-            break;
-        }
-        dst[*out] = hasher.signed_index(key, log2_d);
-        *out += 1;
-    }
 }
 
 #[cfg(test)]
@@ -794,12 +723,12 @@ mod tests {
     }
 
     #[test]
-    fn fill_signed_indices_matches_bucket_tokens() {
+    fn push_signed_indices_matches_bucket_tokens() {
         let cfg = FeatureConfig::default();
         let log2_d = 17u32;
         let d = 1i32 << log2_d;
-        // Every hash id: fmix32 rides the vector block path, the others the
-        // scalar fallback — the fill contract is id-independent.
+        // Every hash id: fmix32 rides the vectorized slice hasher, the
+        // others the per-key fallback.
         for id in crate::hash::HashId::ALL {
             let hasher = crate::hash::FeatureHasher {
                 id,
@@ -822,19 +751,10 @@ mod tests {
                         }
                     })
                     .collect();
-                // Untruncated fill reproduces the whole sequence.
-                let mut dst = vec![0i32; toks.len() + 5];
-                let n = fill_signed_indices(text, &cfg, &hasher, log2_d, dst.len(), &mut dst);
-                assert_eq!(n, expect.len());
-                assert_eq!(&dst[..n], &expect[..], "mismatch for {text:?} ({id:?})");
-                // Truncation: every k up past the block size keeps exactly
-                // the first k signed indices (covers block-boundary ks).
-                for k in 0..=expect.len().min(17) {
-                    let mut small = vec![0i32; k];
-                    let m = fill_signed_indices(text, &cfg, &hasher, log2_d, k, &mut small);
-                    assert_eq!(m, k.min(expect.len()));
-                    assert_eq!(&small[..m], &expect[..m]);
-                }
+                // Appends after whatever `out` already holds.
+                let mut out = vec![-1];
+                push_signed_indices(text, &cfg, &hasher, log2_d, &mut out);
+                assert_eq!(&out[1..], &expect[..], "mismatch for {text:?} ({id:?})");
             }
         }
     }

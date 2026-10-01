@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use spellman_detector::features::{
-    FeatureConfig, WordClass, bucket_tokens, classify_word, fill_signed_indices, token_keys,
+    FeatureConfig, WordClass, bucket_tokens, classify_word, push_signed_indices_routed, token_keys,
 };
 use spellman_detector::hash::FeatureHasher;
 
@@ -71,23 +71,22 @@ fn bench_classify(c: &mut Criterion) {
     group.finish();
 }
 
-/// The zero-copy streaming path the JIT input fill uses (signed indices
-/// written straight into the plan's row buffer, k-capped).
-fn bench_fill_indices(c: &mut Criterion) {
+/// The detectors' featurization: routing and signed indices in one walk.
+fn bench_routed_indices(c: &mut Criterion) {
     let cfg = FeatureConfig::default();
     let hasher = FeatureHasher::default();
-    let mut dst = vec![0i32; 1024];
-    let mut group = c.benchmark_group("fill_indices");
+    let mut out = Vec::with_capacity(1024);
+    let mut group = c.benchmark_group("routed_indices");
     group.throughput(Throughput::Bytes(RUS_TEXT.len() as u64));
-    group.bench_function("rus fmix32 d17 k1024", |b| {
+    group.bench_function("rus fmix32 d17", |b| {
         b.iter(|| {
-            black_box(fill_signed_indices(
+            out.clear();
+            black_box(push_signed_indices_routed(
                 black_box(RUS_TEXT),
                 black_box(&cfg),
                 black_box(&hasher),
                 17,
-                1024,
-                &mut dst,
+                &mut out,
             ))
         })
     });
@@ -126,7 +125,8 @@ fn bench_bulk(c: &mut Criterion) {
 }
 
 /// Hash stage in isolation: the same key stream through the per-key scalar
-/// path and the 8-key block path, benched in one run (shared machine state).
+/// path and the vectorized slice hasher, benched in one run (shared machine
+/// state).
 fn bench_hash_stage(c: &mut Criterion) {
     let hasher = FeatureHasher::default();
     let keys: Vec<u64> = token_keys(RUS_TEXT, &FeatureConfig::default());
@@ -140,18 +140,9 @@ fn bench_hash_stage(c: &mut Criterion) {
             }
         })
     });
-    group.bench_function("block8", |b| {
-        b.iter(|| {
-            for (out, chunk) in dst
-                .as_chunks_mut::<8>()
-                .0
-                .iter_mut()
-                .zip(keys.as_chunks::<8>().0.iter().cycle())
-                .take(128)
-            {
-                hasher.signed_index_block(black_box(chunk), 17, out);
-            }
-        })
+    let keys: Vec<u64> = keys.iter().copied().cycle().take(1024).collect();
+    group.bench_function("slice", |b| {
+        b.iter(|| hasher.signed_indices(black_box(&keys), 17, &mut dst))
     });
     group.finish();
 }
@@ -161,7 +152,7 @@ criterion_group!(
     bench_token_keys,
     bench_bucket_tokens,
     bench_classify,
-    bench_fill_indices,
+    bench_routed_indices,
     bench_hash_stage,
     bench_bulk
 );

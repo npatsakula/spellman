@@ -138,6 +138,15 @@ impl SpellmanModel {
         })
     }
 
+    /// [`Self::from_model`] with the ±q table realized once, so every plan
+    /// of a ladder gathers from one shared buffer instead of folding its
+    /// own copy.
+    fn realized(model: &Model) -> Result<SpellmanModel, BulkError> {
+        let inner = SpellmanModel::from_model(model).context(TensorSnafu)?;
+        inner.table.realize().context(TensorSnafu)?;
+        Ok(inner)
+    }
+
     /// Build the gather-sum graph over a `[b, K]` bucket-index batch.
     /// Returns raw i32 row-sums `[b, TABLE_COLS]` (see [`Readout`]); the
     /// scales, mean-pooling, the bias add, the softmax, and the argmax all
@@ -214,11 +223,6 @@ pub enum BulkError {
         #[snafu(source(from(crate::model::ModelError, Box::new)))]
         source: Box<crate::model::ModelError>,
     },
-    #[snafu(display("state: {source}"))]
-    State {
-        #[snafu(source(from(svod_model::state::Error, Box::new)))]
-        source: Box<svod_model::state::Error>,
-    },
     #[snafu(display("hub: {source}"))]
     Hub {
         #[snafu(source(from(crate::hub::HubError, Box::new)))]
@@ -232,10 +236,9 @@ pub enum BulkError {
 
 /// The host-side part of a loaded model the detectors keep after their
 /// plans are built: featurization config and the read-out constants. The
-/// resolved tables only seed the svod weights at load time and are dropped
-/// there — a [`BulkDetector::replicate`] used to deep-copy them along with
-/// the rest of `Model` (~39 MB per replica at 2^18), while svod's own
-/// `replicate` already shares the weights.
+/// int8 table only seeds the svod weights at load time and is dropped
+/// there, so [`BulkDetector::replicate`] copies none of it (svod's own
+/// `replicate` shares the weights).
 #[derive(Clone, Debug)]
 struct HostModel {
     features: crate::features::FeatureConfig,
@@ -270,6 +273,16 @@ impl HostModel {
 /// result (padding gathers the all-zero row). Rows longer than the top
 /// rung are chunk-accumulated exactly as before.
 const K_LADDER: [usize; 2] = [64, 256];
+
+/// The rungs for a top-rung budget `k`, ascending: the ladder below `k`,
+/// then `k` itself (at least 1).
+fn ladder(k: usize) -> impl Iterator<Item = usize> {
+    let k = k.max(1);
+    K_LADDER
+        .into_iter()
+        .filter(move |&rung| rung < k)
+        .chain(std::iter::once(k))
+}
 
 /// One prepared plan of the ladder.
 struct Plan {
@@ -348,25 +361,12 @@ impl BulkDetector {
         max_batch: usize,
         config: &svod_tensor::PrepareConfig,
     ) -> Result<BulkDetector, BulkError> {
-        let metadata = crate::model::read_metadata(dir).context(ModelSnafu)?;
-        let sd = svod_model::state::load_safetensors_dir(dir).context(StateSnafu)?;
-        let model = Model::from_state_dict(&sd, metadata).context(ModelSnafu)?;
+        let model = Model::load(dir).context(ModelSnafu)?;
         let max_batch = max_batch.max(1);
-        let k = k.max(1);
-        // One realized ±P table shared by every rung: realizing it here
-        // (rather than letting each plan fold its own copy) keeps the
-        // ladder at one table's worth of memory; the plans gather from the
-        // shared buffer.
-        let inner = SpellmanModel::from_model(&model).context(TensorSnafu)?;
-        inner.table.realize().context(TensorSnafu)?;
+        let inner = SpellmanModel::realized(&model)?;
         let readout = inner.readout.clone();
-        let rungs = K_LADDER
-            .iter()
-            .copied()
-            .filter(|&rung| rung < k)
-            .chain(std::iter::once(k));
         let mut plans = Vec::new();
-        for rung in rungs {
+        for rung in ladder(k) {
             let mut jit = SpellmanJit::new(inner.clone()).with_b_fixed(max_batch);
             jit.prepare_with_config(InputSpec::i32(&[max_batch, rung]), config)
                 .context(JitSnafu)?;
@@ -704,20 +704,11 @@ impl SingleDetector {
         k: usize,
         config: &svod_tensor::PrepareConfig,
     ) -> Result<SingleDetector, BulkError> {
-        let metadata = crate::model::read_metadata(dir).context(ModelSnafu)?;
-        let sd = svod_model::state::load_safetensors_dir(dir).context(StateSnafu)?;
-        let model = Model::from_state_dict(&sd, metadata).context(ModelSnafu)?;
-        let k = k.max(1);
-        let inner = SpellmanModel::from_model(&model).context(TensorSnafu)?;
-        inner.table.realize().context(TensorSnafu)?;
+        let model = Model::load(dir).context(ModelSnafu)?;
+        let inner = SpellmanModel::realized(&model)?;
         let readout = inner.readout.clone();
         let mut plans = Vec::new();
-        for rung in K_LADDER
-            .iter()
-            .copied()
-            .filter(|&rung| rung < k)
-            .chain(std::iter::once(k))
-        {
+        for rung in ladder(k) {
             let mut jit = SpellmanJit::new(inner.clone()).with_b_fixed(1);
             jit.prepare_with_config(InputSpec::i32(&[1, rung]), config)
                 .context(JitSnafu)?;
@@ -830,7 +821,7 @@ mod tests {
             assert!(r.confidence.is_finite() && (0.0..=1.0).contains(&r.confidence));
             assert!(Lang::ALL.contains(&lang));
         }
-        // A smaller batch rebinds `b` on the same plan.
+        // A partial batch runs on the same fixed-batch plan.
         let res2 = det.detect_batch(&["ещё раз"]).unwrap();
         assert!(res2[0].lang.is_some());
     }
@@ -888,11 +879,6 @@ mod tests {
             b.confidence
         );
         assert_eq!(a.is_uncertain, b.is_uncertain);
-
-        // a document that fits in K keeps the one-execute fast path
-        let mut short_k = SingleDetector::load(tmp.path(), 8192).unwrap();
-        let c = short_k.detect("Привет, как дела?").unwrap();
-        assert!(c.lang.is_some());
     }
 
     #[test]

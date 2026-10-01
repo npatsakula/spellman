@@ -186,9 +186,10 @@ default plan now runs 2.0 µs/sample. Since svod 0.1.0-alpha.5 the beam search r
 separate helper process: `cargo install svod-tensor --bin
 svod-beam-worker` and point `SVOD_BEAM_WORKER` at the installed binary,
 otherwise `BEAM=16` fails at prepare time with "BEAM helper is
-unavailable" (the heuristic default needs nothing). The 2^18 table costs nothing measurable on the 7950X3D:
-the v12-era 2^17 model times identically (3.5 µs) on the same box. Scoring is pure table lookups after the algebraic
-fold `P = E·W` — no embedding gathers, no matmul. fmix32 bucket spread
+unavailable" (the heuristic default needs nothing). The 2^18 table
+costs nothing measurable on the 7950X3D: the v12-era 2^17 model times
+identically (3.5 µs) on the same box. Scoring is pure table lookups
+after the algebraic fold `P = E·W` — no embedding gathers, no matmul. fmix32 bucket spread
 on real n-grams: chi²/dof ≈ 1.006 (uniform ≈ 1.0).
 
 [whichlang]: https://github.com/quickwit-oss/whichlang

@@ -20,7 +20,7 @@
 //!   30-class table;
 //! - all inference runs through compiled svod execution plans:
 //!   [`jit::SingleDetector`] (B=1 baked into the plan — fully static
-//!   kernels) and [`jit::BulkDetector`] (constant K, rebindable batch,
+//!   kernels) and [`jit::BulkDetector`] (constant K, fixed batch,
 //!   zero-copy featurization straight into the plan's input buffer).
 //!   The table is int8 with per-column scales; the graph gathers and sums
 //!   it exactly in i32, and the scales apply once per document at host

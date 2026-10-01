@@ -15,7 +15,7 @@ Russian/Ukrainian or Bulgarian/Macedonian.
 - **~3.3 µs per document on one core** (~1.3 µs on clean sentences),
   **~0.5 µs across all 14 cores** of an M4 Max (~2M docs/s) — two orders
   of magnitude faster than fastText-class models
-- **8.9 MB model**, pure Rust, no runtime dependencies beyond the crate
+- **7.9 MB model**, pure Rust, no runtime dependencies beyond the crate
 - MIT licensed, and the training data is commercially clean: no
   non-commercial upstream survives the license audit
 

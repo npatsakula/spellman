@@ -16,7 +16,7 @@ use spellman_detector::{BulkDetector, SingleDetector};
 let mut single = SingleDetector::from_hub(1024)?;
 let d = single.detect("Съешь ещё этих мягких французских булок")?;
 
-// Bulk batches — constant K, rebindable batch, rayon featurization written
+// Bulk batches — constant K, fixed batch, rayon featurization written
 // zero-copy straight into the plan's input buffer.
 let mut bulk = BulkDetector::from_hub(1024, 4096)?;
 let results = bulk.detect_batch(&["Привет", "Hello"])?;
