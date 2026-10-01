@@ -102,10 +102,11 @@ fastText-class models and ~29× faster than lingua.
 | Apple M4 Max | 1.9 µs/sample (~520k docs/s) | — | 3.7 µs/doc (one thread) |
 
 Rows above: Tatoeba sentences, BEAM=16, the default (f16-computed) model,
-batch 512. With the `int8-col` variant and 4096-row batches the M4 Max
-runs Tatoeba at 0.86 µs/sample, or 0.77 µs/sample (~1.3M docs/s) as one
-single-thread replica per core; on one thread it is 4.0 µs/sample bulk
-and 2.5 µs/doc single — see [docs/benchmarks.md](docs/benchmarks.md).
+batch 512. With the `int8-col` variant the M4 Max runs Tatoeba at
+0.87 µs/sample with 4096-row batches, or 0.51 µs/sample (~2.0M docs/s)
+as one single-thread replica per core (`BulkDetector::replicate` under
+rayon); on one thread it is 1.7 µs/sample bulk and 2.6 µs/doc single —
+see [docs/benchmarks.md](docs/benchmarks.md).
 
 Inference is pure table lookups: the trained network folds algebraically
 into a single quantized lookup table (`P = E·W`), executed by the [svod]

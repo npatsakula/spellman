@@ -468,40 +468,49 @@ impl BulkDetector {
         }
         let pad = self.model.num_buckets() as i32;
 
-        // Route and featurize every document in one indexed rayon pass:
-        // script-unique languages and letterless text resolve on the spot
-        // and never reach a plan; group-routed rows are featurized in full
-        // (no truncation), and their exact token counts pick the plan rung
-        // and drive the host-side mean-pool. Routing used to run serially
-        // on the calling thread ahead of this pass — ~17% of a batch.
+        // Called from inside a rayon worker — one replica per worker, the
+        // shape `replicate` exists for — the caller already owns the
+        // parallelism: svod runs the kernel inline, and the host work below
+        // runs sequentially too. Nested `par_iter`s there made a worker
+        // blocked on its own subtask steal other replicas' batches and stack
+        // them on top of its own (14 replicas kept ~4 cores busy).
+        let inline = rayon::current_thread_index().is_some();
+
+        // Route and featurize every document in one pass: script-unique
+        // languages and letterless text resolve on the spot and never reach
+        // a plan; group-routed rows are featurized in full (no truncation),
+        // and their exact token counts pick the plan rung and drive the
+        // host-side mean-pool.
         use rayon::prelude::*;
         let model = &self.model;
-        let routed: Vec<Result<Vec<i32>, Detection>> = texts
-            .par_iter()
-            .map(|text| match crate::route::route(text) {
-                crate::route::Route::Direct(lang) => Err(Detection {
-                    lang: Some(lang),
-                    confidence: 1.0,
-                    is_uncertain: false,
-                }),
-                crate::route::Route::Unknown => Err(Detection {
-                    lang: None,
-                    confidence: 0.0,
-                    is_uncertain: true,
-                }),
-                crate::route::Route::Group(_) => {
-                    let mut out = Vec::with_capacity(text.len() / 2 + 8);
-                    crate::features::push_signed_indices(
-                        text,
-                        &model.features,
-                        &model.hasher,
-                        model.log2_d,
-                        &mut out,
-                    );
-                    Ok(out)
-                }
-            })
-            .collect();
+        let route_one = |text: &&str| match crate::route::route(text) {
+            crate::route::Route::Direct(lang) => Err(Detection {
+                lang: Some(lang),
+                confidence: 1.0,
+                is_uncertain: false,
+            }),
+            crate::route::Route::Unknown => Err(Detection {
+                lang: None,
+                confidence: 0.0,
+                is_uncertain: true,
+            }),
+            crate::route::Route::Group(_) => {
+                let mut out = Vec::with_capacity(text.len() / 2 + 8);
+                crate::features::push_signed_indices(
+                    text,
+                    &model.features,
+                    &model.hasher,
+                    model.log2_d,
+                    &mut out,
+                );
+                Ok(out)
+            }
+        };
+        let routed: Vec<Result<Vec<i32>, Detection>> = if inline {
+            texts.iter().map(route_one).collect()
+        } else {
+            texts.par_iter().map(route_one).collect()
+        };
         // `rows[r]` is the result slot of `ids[r]`; every other slot is
         // already final.
         let mut results: Vec<Detection> = Vec::with_capacity(texts.len());
@@ -526,18 +535,29 @@ impl BulkDetector {
             return Ok(results);
         }
 
-        // Smallest rung that holds the longest row; the top rung otherwise
-        // (its overflow is chunk-accumulated below). Fewer, fuller executes
-        // beat tighter padding: padding gathers the cached all-zero row, while
-        // every execute pays a fixed launch cost (~85-90 µs on a 14-thread
-        // M4 Max) — a padding-minimizing rung choice that ran ~6x more
-        // executes measured 3.8 vs 2.1 µs/sample.
-        let longest = ids.iter().map(Vec::len).max().unwrap_or(0);
-        let plan_idx = self
-            .plans
-            .iter()
-            .position(|p| p.k >= longest)
-            .unwrap_or(self.plans.len() - 1);
+        // The rung. A threaded kernel pays a fixed launch cost per execute
+        // (~85-90 µs on a 14-thread M4 Max) while padding only gathers the
+        // cached all-zero row, so fewer, fuller executes win: the smallest
+        // rung that holds the longest row, the top rung otherwise (a
+        // padding-minimizing choice ran ~6x more executes, 3.8 vs 2.1
+        // µs/sample). An inline kernel pays no launch cost, so there the
+        // rung with the least gathered work wins — rows past its K are
+        // chunk-accumulated below, exactly.
+        let plan_idx = if inline {
+            let work = |k: usize| {
+                let chunks: usize = ids.iter().map(|row| row.len().div_ceil(k).max(1)).sum();
+                chunks.div_ceil(self.max_batch) * self.max_batch * k
+            };
+            (0..self.plans.len())
+                .min_by_key(|&i| work(self.plans[i].k))
+                .expect("the ladder has a top rung")
+        } else {
+            let longest = ids.iter().map(Vec::len).max().unwrap_or(0);
+            self.plans
+                .iter()
+                .position(|p| p.k >= longest)
+                .unwrap_or(self.plans.len() - 1)
+        };
         let plan = &mut self.plans[plan_idx];
         let k = plan.k;
 
@@ -574,14 +594,22 @@ impl BulkDetector {
                 // Zero-copy: chunk ids land straight in the host-mapped
                 // plan buffer, row tails padded; rows past this group that
                 // an earlier call wrote are re-padded.
-                flat[..group.len() * k]
-                    .par_chunks_mut(k)
-                    .zip(group.par_iter())
-                    .for_each(|(row, &(r, start))| {
-                        let src = &ids[r][start..(start + k).min(ids[r].len())];
-                        row[..src.len()].copy_from_slice(src);
-                        row[src.len()..].fill(pad);
-                    });
+                let fill = |(row, &(r, start)): (&mut [i32], &(usize, usize))| {
+                    let src = &ids[r][start..(start + k).min(ids[r].len())];
+                    row[..src.len()].copy_from_slice(src);
+                    row[src.len()..].fill(pad);
+                };
+                if inline {
+                    flat[..group.len() * k]
+                        .chunks_mut(k)
+                        .zip(group)
+                        .for_each(fill);
+                } else {
+                    flat[..group.len() * k]
+                        .par_chunks_mut(k)
+                        .zip(group.par_iter())
+                        .for_each(fill);
+                }
                 if plan.dirty_rows > group.len() {
                     flat[group.len() * k..plan.dirty_rows * k].fill(pad);
                 }
@@ -985,6 +1013,40 @@ mod tests {
         let mut short_k = SingleDetector::load(tmp.path(), 8192).unwrap();
         let c = short_k.detect("Привет, как дела?").unwrap();
         assert!(c.lang.is_some());
+    }
+
+    #[test]
+    fn bulk_inside_a_rayon_worker_scores_like_outside() {
+        // Inside a rayon worker detect_batch runs its host work inline and
+        // picks the least-work rung (chunk-accumulating rows past its K);
+        // outside it fans out and picks the longest-row rung. Both must give
+        // the same detections, in order.
+        let tmp = tempfile::tempdir().unwrap();
+        crate::model::test_support::write_test_model(tmp.path());
+        let short = "Привет, как дела?";
+        let long = "Привет, как дела? Это длинный документ. ".repeat(40);
+        let texts: Vec<&str> = [short, long.as_str(), "Hello world", "こんにちは", "12345"]
+            .into_iter()
+            .cycle()
+            .take(13)
+            .collect();
+        let mut outside = BulkDetector::load(tmp.path(), 1024, 16).unwrap();
+        let expect = outside.detect_batch(&texts).unwrap();
+        let mut replica = outside.replicate().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let got = pool.install(|| {
+            assert!(rayon::current_thread_index().is_some());
+            replica.detect_batch(&texts).unwrap()
+        });
+        assert_eq!(got.len(), expect.len());
+        for (a, b) in expect.iter().zip(&got) {
+            assert_eq!(a.lang, b.lang);
+            assert!((a.confidence - b.confidence).abs() < 1e-3);
+            assert_eq!(a.is_uncertain, b.is_uncertain);
+        }
     }
 
     #[test]

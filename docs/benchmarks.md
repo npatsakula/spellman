@@ -147,16 +147,21 @@ and the 368,507-row held-out mix (`model/eval_test.tsv`), BEAM=16:
 
 | run | Tatoeba | held-out mix |
 |---|---|---|
-| bulk, svod-threaded kernel | 0.86 µs/sample | 1.22 µs/sample |
-| bulk, one single-thread replica per core (14) | 0.77 µs/sample | 0.92 µs/sample |
-| bulk, one thread | 4.02 µs/sample | 6.64 µs/sample |
-| single document, one thread | 2.53 µs/doc | 6.93 µs/doc |
-| whichlang 0.1, one thread (10/30 classes) | 0.32 µs/sample | 1.24 µs/sample |
+| bulk, svod-threaded kernel | 0.87 µs/sample | 1.25 µs/sample |
+| bulk, one single-thread replica per core (14) | 0.51 µs/sample | 0.75 µs/sample |
+| bulk, one thread | 1.69 µs/sample | 4.92 µs/sample |
+| single document, one thread | 2.57 µs/doc | 7.02 µs/doc |
+| whichlang 0.1, one thread (10/30 classes) | 0.35 µs/sample | 1.22 µs/sample |
 
 Replicas beat the svod-threaded kernel because every threaded execute
 pays a fixed launch cost (~85–90 µs on 14 threads) that single-thread
-replicas never do. The one-thread rows are the like-for-like comparison
-with whichlang and lingua, which `lid-bench` runs on one thread.
+replicas never do. Called from inside a rayon worker — replicas, or the
+one-thread rows — `detect_batch` also runs its host work inline (nested
+`par_iter`s there let workers stack other replicas' batches on top of
+their own) and picks the rung with the least gathered work, since an
+inline kernel pays no launch cost. The one-thread rows are the
+like-for-like comparison with whichlang and lingua, which `lid-bench`
+runs on one thread.
 
 Same box, same settings, other inputs: the 719k-row held-out test split
 (longer, mixed-register texts) runs at 2.9 µs/sample and a 1M-row file
