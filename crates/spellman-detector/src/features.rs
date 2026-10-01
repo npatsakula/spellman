@@ -460,7 +460,7 @@ pub fn for_each_bucket<F: FnMut(u32, bool)>(
 
 /// Stream up to `k` signed bucket tokens of `text` directly into `dst` as
 /// signed table indices — `bucket`, or `D+1+bucket` for negative tokens (the
-/// signed index encoding the JIT plans decode) — returning the
+/// ±P doubled-table gather layout the JIT plans consume) — returning the
 /// number written. Zero-allocation single pass over the text; the result is
 /// identical to iterating [`bucket_tokens`] and breaking at `k`, minus the
 /// token-vector materialization.

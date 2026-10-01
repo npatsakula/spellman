@@ -19,18 +19,10 @@
 //! keeps a small ladder of plans over `K` and picks one per call by the
 //! longest row; [`SingleDetector`] is the `B = 1` special case.
 //!
-//! Signed hashing rides in the index: featurization emits `bucket` for a
-//! positive token and `D+1+bucket` for a negative one. The gather table is
-//! `P` alone, `[D+1, C]`. A small kernel decodes each index into its row and
-//! a ±1 sign (materialized with `contiguous()`), and the gather multiplies
-//! each row by its sign before the sum — `smlal` on NEON. The padding row
-//! is index `D`, all-zero.
-//!
-//! The table used to be doubled, `[P; -P]`, so the sign selected a row
-//! block: twice the bytes (16.8 MB as int8, past a 16 MB L2). Decoding the
-//! sign *inside* the gather kernel with a `where` broke its fused
-//! widen-and-add (~40% slower); the materialized decode plus the multiply
-//! measured ~6-7% faster than the doubled table end to end.
+//! Signed hashing is folded into the table layout: the gather table is
+//! `[2*(D+1), C]` with rows `0..=D` equal to `P` and rows `D+1..=2D+1` equal
+//! to `-P`, so a token's sign selects the row block and the graph needs no
+//! multiplies. The padding row lives at index `D` (all-zero) in both blocks.
 
 // svod's tensor/jit `Result` types cross this module's API (from_table,
 // forward_batch, the jit_wrapper build closure); they are svod-owned and
@@ -75,12 +67,12 @@ fn pad_columns<T: Copy + Default>(values: &[T]) -> Vec<T> {
 /// Cloning shares the table.
 #[derive(Clone)]
 pub struct SpellmanModel {
-    /// `P`, `[D+1, TABLE_COLS]`: fp16, or int8 for column-quantized
-    /// artifacts.
+    /// `[2*(D+1), TABLE_COLS]` — `P` block then `-P` block: fp16, or int8
+    /// for column-quantized artifacts.
     table: Tensor,
-    /// Row count of `table`, `D+1`: signed indices at or past it address
-    /// `-P` (see [`Self::forward_batch`]).
-    buckets: i32,
+    /// Row count of `table`, `2*(D+1)`: the bound the gather indices are
+    /// clamped to (see [`Self::forward_batch`]).
+    rows: i32,
     /// How the plan's row-sums turn back into f32 logit sums.
     readout: Readout,
 }
@@ -155,8 +147,9 @@ impl SpellmanModel {
     }
 
     /// Build from an int8 table `[D+1, NUM_LANGS]` with per-column
-    /// `scales`. The i8 sum accumulates in i32, and the scales are applied
-    /// at read-out.
+    /// `scales`. The ±q doubling stays in the graph, as in
+    /// [`Self::from_table`]; the i8 sum accumulates in i32, and the scales
+    /// are applied at read-out.
     pub fn from_int8_columns(
         q: &[i8],
         scales: &[f32],
@@ -169,9 +162,11 @@ impl SpellmanModel {
             &[rows, TABLE_COLS],
             svod_dtype::DType::Int8,
         )?;
+        let neg = -&p;
+        let jit_table = Tensor::cat(&[&p, &neg], 0)?;
         Ok(SpellmanModel {
-            table: p,
-            buckets: rows as i32,
+            table: jit_table,
+            rows: (2 * rows) as i32,
             readout: Readout::I32 {
                 scales: scales.to_vec(),
             },
@@ -180,8 +175,9 @@ impl SpellmanModel {
 
     /// Build from the canonical (dequantized) host table `[D+1, NUM_LANGS]`
     /// f32, padded to `TABLE_COLS` — the single representation the loader resolves from any storage
-    /// precision. The f16 cast stays in the graph, fused into the JIT plan's
-    /// constant realization instead of staging through host memory twice.
+    /// precision. The f16 cast and the ±P doubling (`cat`) stay in the
+    /// graph, so the doubled table is fused into the JIT plan's constant
+    /// realization instead of staging through host memory twice.
     pub fn from_table(table: &[f32]) -> Result<SpellmanModel, svod_tensor::error::Error> {
         let table = pad_columns(table);
         let rows = table.len() / TABLE_COLS;
@@ -190,16 +186,19 @@ impl SpellmanModel {
         // BEAM-scheduled graph, measured), and explicit boundaries are
         // worse still — an eager realize() blocks inlining, a contiguous()
         // marker lands on the execution path (60× single-doc). buffer →
-        // cast is the state-dict load idiom, fully lazy for the plan to fold.
+        // cast → neg → cat is the state-dict load idiom, fully lazy for
+        // the plan to fold.
         let p = Tensor::from_raw_bytes(
             bytemuck::cast_slice(&table),
             &[rows, TABLE_COLS],
             svod_dtype::DType::Float32,
         )?
         .cast(svod_dtype::DType::Float16);
+        let neg = -&p;
+        let jit_table = Tensor::cat(&[&p, &neg], 0)?;
         Ok(SpellmanModel {
-            table: p,
-            buckets: rows as i32,
+            table: jit_table,
+            rows: (2 * rows) as i32,
             readout: Readout::F16,
         })
     }
@@ -224,7 +223,7 @@ impl SpellmanModel {
         // The prepare-time placeholder is allocated at max batch; shrink to
         // the symbolic batch for kernel specialization at bind time.
         let idx = idx.try_shrink([Some((SInt::Const(0), bv.clone())), None])?;
-        // Row-gather `P`: [b, K] -> [b, K, C]. `embedding` needs a
+        // Row-gather the ±P table: [b, K] -> [b, K, C]. `embedding` needs a
         // concrete index shape, which is exactly why K stays a JIT constant.
         //
         // The indices stay i32 on purpose (the largest table offset,
@@ -243,35 +242,9 @@ impl SpellmanModel {
         // token and cannot fuse the widen into the add (`saddw` on NEON).
         // Clamped, the gate folds away — 79 → 50 instructions per token,
         // ~20-27% faster single-thread kernel (M4 Max, int8, 32 columns).
-        // Decode the signed index — `bucket`, or `D+1+bucket` for a negative
-        // token — into a row and a ±1 sign in the table's dtype, both
-        // materialized (`contiguous`) so the gather kernel only loads them.
-        // The gather multiplies each row by its sign before the sum widens
-        // it (`smlal` on NEON); a `where` there instead broke the fused
-        // widen-and-add.
-        //
-        // The clamp sits after the boundary on purpose: it is a no-op on
-        // every index featurization emits, but it is the bound the backend
-        // cannot see on a loaded value. The collapsed gather keeps a
-        // `0 <= row < D+1` gate whose else-branch is 0; without the clamp
-        // LLVM zeroes the lanes on every token and cannot fuse the widen
-        // into the add (79 → 50 instructions per token measured).
-        let d1 = self.buckets;
-        let neg = idx.try_ge(d1)?;
-        let row = idx
-            .try_sub(d1)?
-            .where_(&neg, &idx)?
-            .contiguous()
-            .maximum(0i32)?
-            .minimum(d1 - 1)?;
-        let sign = neg
-            .cast(svod_dtype::DType::Int32)
-            .try_mul(-2i32)?
-            .try_add(1i32)?
-            .cast(self.table.uop().dtype())
-            .contiguous();
-        let rows = self.table.embedding(&row)?;
-        rows.try_mul(&sign.try_unsqueeze(-1)?)?.sum(1)
+        let idx = idx.maximum(0i32)?.minimum(self.rows - 1)?;
+        let rows = self.table.embedding(&idx)?;
+        rows.sum(1)
     }
 }
 
@@ -450,7 +423,7 @@ impl BulkDetector {
         let model = Model::from_state_dict(&sd, metadata).context(ModelSnafu)?;
         let max_batch = max_batch.max(1);
         let k = k.max(1);
-        // One realized table shared by every rung: realizing it here
+        // One realized ±P table shared by every rung: realizing it here
         // (rather than letting each plan fold its own copy) keeps the
         // ladder at one table's worth of memory; the plans gather from the
         // shared buffer.
