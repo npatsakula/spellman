@@ -698,6 +698,18 @@ impl SingleDetector {
     /// the top rung (K ≥ 1024 for paragraph text — see [`BulkDetector`]);
     /// longer documents are chunk-accumulated, never truncated.
     pub fn load(dir: &std::path::Path, k: usize) -> Result<SingleDetector, BulkError> {
+        Self::load_with_prepare_config(dir, k, &svod_tensor::PrepareConfig::from_env())
+    }
+
+    /// [`Self::load`] with an explicit prepare configuration (optimizer
+    /// strategy, beam width, thread count) instead of the
+    /// environment-derived default — e.g. a one-thread plan for
+    /// single-core measurements, as [`BulkDetector::load_with_prepare_config`].
+    pub fn load_with_prepare_config(
+        dir: &std::path::Path,
+        k: usize,
+        config: &svod_tensor::PrepareConfig,
+    ) -> Result<SingleDetector, BulkError> {
         let metadata = crate::model::read_metadata(dir).context(ModelSnafu)?;
         let sd = svod_model::state::load_safetensors_dir(dir).context(StateSnafu)?;
         let model = Model::from_state_dict(&sd, metadata).context(ModelSnafu)?;
@@ -717,7 +729,8 @@ impl SingleDetector {
                 readout: readout.clone(),
             })
             .with_b_fixed(1);
-            jit.prepare(InputSpec::i32(&[1, rung])).context(JitSnafu)?;
+            jit.prepare_with_config(InputSpec::i32(&[1, rung]), config)
+                .context(JitSnafu)?;
             plans.push(SinglePlan { jit, k: rung });
         }
         Ok(SingleDetector {
