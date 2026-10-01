@@ -12,9 +12,9 @@ Russian/Ukrainian or Bulgarian/Macedonian.
 - **~99% accuracy** on out-of-domain sentences, **~95%** on real
   ≤19-character utterances — the regime where general detectors drop to
   70–85% ([full benchmarks](docs/benchmarks.md))
-- **~2 µs per sentence** on a desktop CPU (~500k docs/s in bulk, under
-  1 µs on single words) — two orders of magnitude faster than
-  fastText-class models
+- **~3.3 µs per document on one core** (~1.3 µs on clean sentences),
+  **~0.5 µs across all 14 cores** of an M4 Max (~2M docs/s) — two orders
+  of magnitude faster than fastText-class models
 - **8.9 MB model**, pure Rust, no runtime dependencies beyond the crate
 - MIT licensed, and the training data is commercially clean: no
   non-commercial upstream survives the license audit
@@ -92,21 +92,25 @@ The pattern: on clean long text every good detector works, and GlotLID's
 enormous training set keeps a 0.2pp lead on Tatoeba. Everywhere else —
 short text, wild register, close Cyrillic pairs, minority languages —
 spellman leads by 5–30 points while running ~100× faster than the
-fastText-class models and ~29× faster than lingua.
+fastText-class models and ~60× faster than lingua (one thread each).
 
 ## Speed
 
-| hardware | bulk, sentences | bulk, single words | single document |
-|---|---|---|---|
-| AMD Ryzen 9 7950X3D | 1.9 µs/sample (~525k docs/s) | 0.8 µs/sample | 4.3 µs/doc |
-| Apple M4 Max | 1.9 µs/sample (~520k docs/s) | — | 3.7 µs/doc (one thread) |
+Apple M4 Max, the `int8-col` model (scored in int8; the f16-computed
+path is not tuned and runs slower), BEAM=16, µs per document:
 
-Rows above: Tatoeba sentences, BEAM=16, the default (f16-computed) model,
-batch 512. With the `int8-col` variant the M4 Max runs Tatoeba at
-0.87 µs/sample with 4096-row batches, or 0.51 µs/sample (~2.0M docs/s)
-as one single-thread replica per core (`BulkDetector::replicate` under
-rayon); on one thread it is 1.7 µs/sample bulk and 2.6 µs/doc single —
-see [docs/benchmarks.md](docs/benchmarks.md).
+| | Tatoeba sentences | held-out mix |
+|---|---|---|
+| one thread, bulk | 1.1–1.4 | 3.2–3.4 |
+| one thread, single document | 2.6 | 6.5–6.8 |
+| 14 cores, one single-thread replica per core | 0.18–0.21 (~5M docs/s) | 0.44–0.50 (~2.1M docs/s) |
+| 14 cores, svod-threaded kernel, 4096-row batches | 0.75 | 0.97–1.00 |
+
+For multi-core bulk work, prepare a one-thread plan (`SVOD_THREADS=1`,
+so BEAM tunes the plan for one thread) and fork one replica per worker
+(`BulkDetector::replicate` under rayon `map_init`; replicas share the
+weights). Methodology and the whichlang / lingua /
+GlotLID comparison: [docs/benchmarks.md](docs/benchmarks.md).
 
 Inference is pure table lookups: the trained network folds algebraically
 into a single quantized lookup table (`P = E·W`), executed by the [svod]

@@ -138,20 +138,27 @@ svod JIT plans, BEAM=16, k=1024 (top rung), batch 512, Tatoeba eval —
 | hardware | model | bulk | single document |
 |---|---|---|---|
 | AMD Ryzen 9 7950X3D | v14 (2^18) | 1.9 µs/sample (~525k docs/s) | 4.3 µs/doc |
-| Apple M4 Max | v14 (2^18) | 1.9 µs/sample (~520k docs/s) | 3.7 µs/doc (one thread) |
 | AMD AI 395 Max (before the batch/K rework) | v12 (2^17) | 1.2 µs/sample (~830k docs/s) | 13.0 µs/doc |
 
-On the M4 Max, the `int8-col` variant (scored in int8, see the design
-doc) with 4096-row batches — `lid-bench` against `train/tatoeba_eval.tsv`
-and the 368,507-row held-out mix (`model/eval_test.tsv`), BEAM=16:
+On the Apple M4 Max the measured path is the `int8-col` variant (scored
+in int8, see the design doc); the f16-computed path is not tuned — the
+index clamp that lets int8 fuse its widen-and-add costs f16 ~80% when
+the kernel is svod-threaded — and is not reported. `lid-bench` against
+`train/tatoeba_eval.tsv` and the 368,507-row held-out mix
+(`model/eval_test.tsv`), BEAM=16, timed threads on performance cores;
+ranges over two runs. The one-thread and replica rows run with
+`SVOD_THREADS=1` (BEAM tunes those plans for one thread), the
+svod-threaded row without it:
 
 | run | Tatoeba | held-out mix |
 |---|---|---|
-| bulk, svod-threaded kernel | 0.87 µs/sample | 1.25 µs/sample |
-| bulk, one single-thread replica per core (14) | 0.51 µs/sample | 0.75 µs/sample |
-| bulk, one thread | 1.69 µs/sample | 4.92 µs/sample |
-| single document, one thread | 2.57 µs/doc | 7.02 µs/doc |
-| whichlang 0.1, one thread (10/30 classes) | 0.35 µs/sample | 1.22 µs/sample |
+| bulk, svod-threaded kernel, 4096-row batches | 0.75 µs/sample | 0.97–1.00 µs/sample |
+| bulk, one single-thread replica per core (14) | 0.18–0.21 µs/sample | 0.44–0.50 µs/sample |
+| bulk, one thread | 1.14–1.40 µs/sample | 3.22–3.41 µs/sample |
+| single document, one thread | 2.59–2.63 µs/doc | 6.52–6.84 µs/doc |
+| whichlang 0.1, one thread (10/30 classes) | 0.35 µs/sample | 1.13–1.21 µs/sample |
+| whichlang 0.1, 14 threads | 0.04 µs/sample | 0.12–0.16 µs/sample |
+| lingua 1.8 high accuracy, one thread (17/30) | 98.5–102 µs/sample | 193–202 µs/sample |
 
 Replicas beat the svod-threaded kernel because every threaded execute
 pays a fixed launch cost (~85–90 µs on 14 threads) that single-thread
