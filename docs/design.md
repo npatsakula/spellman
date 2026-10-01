@@ -150,7 +150,7 @@ proportional mix of both channels in long documents. Words dropped by the
 Measured effect (same data, same training config): held-out 98.15 → 98.28,
 Tatoeba 98.32 → 98.66, Tatoeba single-word rung 66.9 → 68.5, wild tweets
 92.35 → 93.73. Token count grows ~10% (~2 keys per word); bulk latency is
-unchanged (3.4–3.5 µs/sample on M1 Pro).
+unchanged.
 
 ## Feature hashing
 

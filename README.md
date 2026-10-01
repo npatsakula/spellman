@@ -99,7 +99,13 @@ fastText-class models and ~29× faster than lingua.
 | hardware | bulk, sentences | bulk, single words | single document |
 |---|---|---|---|
 | AMD Ryzen 9 7950X3D | 1.9 µs/sample (~525k docs/s) | 0.8 µs/sample | 4.3 µs/doc |
-| Apple M1 Pro (v12-era, before the batch/K rework) | 3.6 µs/sample | — | 3.8 µs/doc |
+| Apple M4 Max | 1.9 µs/sample (~520k docs/s) | — | 3.7 µs/doc (one thread) |
+
+Rows above: Tatoeba sentences, BEAM=16, the default (f16-computed) model,
+batch 512. With the `int8-col` variant and 4096-row batches the M4 Max
+runs Tatoeba at 0.86 µs/sample, or 0.77 µs/sample (~1.3M docs/s) as one
+single-thread replica per core; on one thread it is 4.0 µs/sample bulk
+and 2.5 µs/doc single — see [docs/benchmarks.md](docs/benchmarks.md).
 
 Inference is pure table lookups: the trained network folds algebraically
 into a single quantized lookup table (`P = E·W`), executed by the [svod]

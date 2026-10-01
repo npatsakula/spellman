@@ -138,8 +138,25 @@ svod JIT plans, BEAM=16, k=1024 (top rung), batch 512, Tatoeba eval —
 | hardware | model | bulk | single document |
 |---|---|---|---|
 | AMD Ryzen 9 7950X3D | v14 (2^18) | 1.9 µs/sample (~525k docs/s) | 4.3 µs/doc |
-| Apple M1 Pro (before the batch/K rework) | v12 (2^17) | 3.6 µs/sample (~280k docs/s) | 3.8 µs/doc |
+| Apple M4 Max | v14 (2^18) | 1.9 µs/sample (~520k docs/s) | 3.7 µs/doc (one thread) |
 | AMD AI 395 Max (before the batch/K rework) | v12 (2^17) | 1.2 µs/sample (~830k docs/s) | 13.0 µs/doc |
+
+On the M4 Max, the `int8-col` variant (scored in int8, see the design
+doc) with 4096-row batches — `lid-bench` against `train/tatoeba_eval.tsv`
+and the 368,507-row held-out mix (`model/eval_test.tsv`), BEAM=16:
+
+| run | Tatoeba | held-out mix |
+|---|---|---|
+| bulk, svod-threaded kernel | 0.86 µs/sample | 1.22 µs/sample |
+| bulk, one single-thread replica per core (14) | 0.77 µs/sample | 0.92 µs/sample |
+| bulk, one thread | 4.02 µs/sample | 6.64 µs/sample |
+| single document, one thread | 2.53 µs/doc | 6.93 µs/doc |
+| whichlang 0.1, one thread (10/30 classes) | 0.32 µs/sample | 1.24 µs/sample |
+
+Replicas beat the svod-threaded kernel because every threaded execute
+pays a fixed launch cost (~85–90 µs on 14 threads) that single-thread
+replicas never do. The one-thread rows are the like-for-like comparison
+with whichlang and lingua, which `lid-bench` runs on one thread.
 
 Same box, same settings, other inputs: the 719k-row held-out test split
 (longer, mixed-register texts) runs at 2.9 µs/sample and a 1M-row file
