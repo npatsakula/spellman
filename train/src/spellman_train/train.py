@@ -26,6 +26,7 @@ import numpy as np
 import torch
 from safetensors.numpy import save_file
 from torch import nn
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from spellman_train.features import (
@@ -64,6 +65,13 @@ class Config:
     #: Linear(dim, hidden) -> GELU between pool and classifier and cannot fold.
     head: str = "linear"
     hidden: int = 256
+    #: Seed for the training RNGs (row balancing/order, head init). None
+    #: reuses the hash seed, as every run before it did; the hash seed
+    #: itself is part of the exported artifact and must not vary between
+    #: replicates.
+    train_seed: int | None = None
+    #: Row-sparse embedding updates (LazyAdamW); False = dense torch AdamW.
+    sparse: bool = True
 
 def load_split(data_dir: Path, split: str) -> list[dict]:
     """Read one split of a mix: parquet shard if present, else legacy jsonl.
@@ -140,11 +148,10 @@ def to_device(idx: np.ndarray, sign: np.ndarray, mask: np.ndarray, dev: torch.de
 
 
 class PooledHead(nn.Module):
-    """Mean-pool + linear head, isolated so torch.compile covers exactly
-    this subgraph: embedding inside the compiled region trips an unstable
-    inductor-on-MPS bug ("Tensor device mismatch" / "Placeholder storage
-    has not been allocated on MPS device"), while the gather itself is
-    memory-bound and gains little from compilation.
+    """Classifier over the pooled embedding, isolated so torch.compile
+    covers exactly this subgraph: embedding inside the compiled region trips
+    an unstable inductor-on-MPS bug ("Tensor device mismatch" / "Placeholder
+    storage has not been allocated on MPS device").
 
     With hidden > 0 (the --head mlp experiment) a Linear(dim, hidden) +
     GELU sits between pool and classifier; that net no longer folds."""
@@ -154,9 +161,20 @@ class PooledHead(nn.Module):
         self.mlp = nn.Sequential(nn.Linear(dim, hidden), nn.GELU()) if hidden else nn.Identity()
         self.head = nn.Linear(hidden or dim, n_classes)
 
-    def forward(self, e: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        pooled = (e * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp(min=1.0)
+    def forward(self, pooled: torch.Tensor) -> torch.Tensor:
         return self.head(self.mlp(pooled))
+
+
+def mean_pool(table: torch.Tensor, idx: torch.Tensor, sign: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Masked mean of the signed rows ``table[idx]`` per sample.
+
+    ``embedding_bag`` with ``sign·mask`` as per-sample weights sums the rows
+    without materializing the ``[batch, k, dim]`` gather; that intermediate
+    and its backward made a training step ~2.5x slower on MPS (measured,
+    M4 Max: 9.6 -> 3.6 ms/step at batch 256, k 512, dim 128).
+    """
+    summed = F.embedding_bag(idx, table, per_sample_weights=sign * mask, mode="sum")
+    return summed / mask.sum(1, keepdim=True).clamp(min=1.0)
 
 
 class SpellmanNet(nn.Module):
@@ -176,8 +194,74 @@ class SpellmanNet(nn.Module):
         return self.post.head
 
     def forward(self, idx: torch.Tensor, sign: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        emb = self.emb(idx) * sign.unsqueeze(-1)
-        return self.post(emb, mask)
+        return self.post(mean_pool(self.emb.weight, idx, sign, mask))
+
+
+class LazyAdamW:
+    """AdamW for the embedding table that touches only the rows a batch uses.
+
+    Dense ``torch.optim.AdamW`` rewrites all ``(D+1)·dim`` parameters and
+    both moment buffers every step, though a batch touches a few thousand
+    rows. Here a step gathers the touched rows' state, updates it and
+    scatters it back.
+
+    Decoupled weight decay stays exact: the learning-rate schedule is known
+    up front, so the decay a row missed while untouched is one factor from a
+    prefix sum of ``log(1 - lr_t·wd)``, applied when the row is next touched
+    (and to every row by :meth:`finish`). What dense AdamW does and this does
+    not: keep moving untouched rows on their decaying momentum.
+    """
+
+    def __init__(self, weight: torch.Tensor, lrs: np.ndarray, wd: float,
+                 betas: tuple[float, float] = (0.9, 0.999), eps: float = 1e-8):
+        self.weight = weight
+        self.m = torch.zeros_like(weight)
+        self.v = torch.zeros_like(weight)
+        # Steps are 1-based; last[r] = the last step row r was brought up to
+        # date at (0 = never).
+        self.last = torch.zeros(weight.shape[0], dtype=torch.long, device=weight.device)
+        log_keep = np.concatenate([[0.0], np.cumsum(np.log1p(-lrs * wd))])
+        self.log_keep = torch.tensor(log_keep, dtype=torch.float32, device=weight.device)
+        self.lrs, self.wd, self.betas, self.eps = lrs, wd, betas, eps
+        self.t = 0
+
+    def _catch_up(self, rows: torch.Tensor, upto: int) -> torch.Tensor:
+        """Decay factor for ``rows`` over steps ``(last, upto]``."""
+        return torch.exp(self.log_keep[upto] - self.log_keep[self.last[rows]]).unsqueeze(-1)
+
+    @torch.no_grad()
+    def step(self, rows: torch.Tensor, grad: torch.Tensor) -> None:
+        """One AdamW step for the unique ``rows`` with their summed ``grad``."""
+        self.t += 1
+        t, (b1, b2) = self.t, self.betas
+        lr = float(self.lrs[t - 1])
+        p = self.weight[rows] * self._catch_up(rows, t)  # decay through step t
+        m = self.m[rows].mul_(b1).add_(grad, alpha=1 - b1)
+        v = self.v[rows].mul_(b2).addcmul_(grad, grad, value=1 - b2)
+        denom = (v / (1 - b2**t)).sqrt_().add_(self.eps)
+        p.addcdiv_(m, denom, value=-lr / (1 - b1**t))
+        self.weight[rows] = p
+        self.m[rows] = m
+        self.v[rows] = v
+        self.last[rows] = t
+
+    @torch.no_grad()
+    def finish(self) -> None:
+        """Bring every row's weight decay up to the last step taken."""
+        self.weight.mul_(torch.exp(self.log_keep[self.t] - self.log_keep[self.last]).unsqueeze(-1))
+        self.last.fill_(self.t)
+
+
+def lr_schedule(cfg: Config, n: int) -> np.ndarray:
+    """Per-step learning rate: linear decay to zero across all epochs
+    (fastText-style), floored at 1e-5 — the value each optimizer step uses."""
+    steps = []
+    for epoch in range(cfg.epochs):
+        for start in range(0, n, cfg.batch_size):
+            frac = 1.0 - (epoch * n + min(start + cfg.batch_size, n)) / (cfg.epochs * n)
+            steps.append(max(cfg.lr * frac, 1e-5))
+    # Step i runs with the rate set after step i-1 (the first with cfg.lr).
+    return np.array([cfg.lr] + steps[:-1])
 
 
 @torch.no_grad()
@@ -312,14 +396,21 @@ def populate(ap: argparse.ArgumentParser) -> None:
                     help="mlp = experiment: pool -> Linear(dim, hidden) -> GELU -> Linear; "
                     "not foldable, saves model.pt only (no runtime export)")
     ap.add_argument("--hidden", type=int, default=256)
+    ap.add_argument("--train-seed", type=int, default=None,
+                    help="seed for row balancing/order and head init (default: the hash --seed, "
+                    "as before); vary this, not --seed, for replicates")
+    ap.add_argument("--dense", action="store_true",
+                    help="dense torch AdamW over the whole embedding table instead of the "
+                    "row-sparse LazyAdamW (the pre-sparse behavior, for A/B)")
     ap.add_argument("--hash-stats", action="store_true")
     ap.add_argument("--device", default="cpu")
     ap.add_argument(
         "--compile",
-        action="store_true",
-        help="torch.compile the net (measured on M1 Pro: 33.7 ms/step cpu -> "
-        "10.5 ms/step mps+compile, ~3.2x; warmup ~1s, two extra recompiles "
-        "for the partial eval batches)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="torch.compile the classifier (on by default; M4 Max, sparse "
+        "updates: 9.6 -> 7.9 ms/step before embedding_bag pooling; warmup ~1s, "
+        "two extra recompiles for the partial eval batches)",
     )
     ap.add_argument(
         "--quant-max-drop",
@@ -344,6 +435,8 @@ def run(args: argparse.Namespace) -> None:
         per_lang_cap=args.per_lang_cap,
         head=args.head,
         hidden=args.hidden,
+        train_seed=args.train_seed,
+        sparse=not args.dense,
     )
 
     train_rows = load_split(args.data, "train")
@@ -354,7 +447,9 @@ def run(args: argparse.Namespace) -> None:
     if args.hash_stats:
         chi_square_stats(train_rows, cfg)
 
-    rng = np.random.default_rng(cfg.seed)
+    train_seed = cfg.seed if cfg.train_seed is None else cfg.train_seed
+    rng = np.random.default_rng(train_seed)
+    torch.manual_seed(train_seed)
     train_rows = balance_train(train_rows, cfg.per_lang_cap, rng)
 
     train_t = featurize(train_rows, cfg)
@@ -363,11 +458,18 @@ def run(args: argparse.Namespace) -> None:
     device = torch.device(args.device)
     hidden = cfg.hidden if cfg.head == "mlp" else 0
     model = SpellmanNet(1 << cfg.log2_d, cfg.dim, len(LANGUAGES), hidden).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    raw = model  # eval/export use the uncompiled module
-    if args.compile:
-        model.post = torch.compile(model.post)
     n = len(train_t[3])
+    lrs = lr_schedule(cfg, n)
+    if cfg.sparse:
+        # The embedding table goes to LazyAdamW; only the head is dense.
+        emb_opt = LazyAdamW(model.emb.weight.data, lrs, cfg.weight_decay)
+        opt = torch.optim.AdamW(model.post.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    else:
+        opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    raw = model  # eval/export use the uncompiled module
+    # Compile into a separate handle: assigning it back to model.post would
+    # prefix the saved state_dict keys with `_orig_mod.`.
+    post = torch.compile(model.post) if args.compile else model.post
     for epoch in range(cfg.epochs):
         order = rng.permutation(n)
         losses = []
@@ -376,16 +478,28 @@ def run(args: argparse.Namespace) -> None:
             sel = order[start : start + cfg.batch_size]
             idx, sign, mask = to_device(train_t[0][sel], train_t[1][sel], train_t[2][sel], device)
             y = torch.from_numpy(train_t[3][sel]).to(device)
-            logits = model(idx, sign, mask)
+            if cfg.sparse:
+                # Gather each touched row once as a leaf: backward then
+                # yields one summed gradient per unique row, never a dense
+                # (D+1)·dim one.
+                rows, inverse = torch.unique(idx, return_inverse=True)
+                leaf = raw.emb.weight.detach()[rows].requires_grad_()
+                logits = post(mean_pool(leaf, inverse, sign, mask))
+            else:
+                logits = post(mean_pool(model.emb.weight, idx, sign, mask))
             loss = nn.functional.cross_entropy(logits, y)
             opt.zero_grad()
             loss.backward()
             opt.step()
+            if cfg.sparse:
+                emb_opt.step(rows, leaf.grad)
             losses.append(float(loss))
             # Linear decay to zero across all epochs (fastText-style).
             frac = 1.0 - (epoch * n + min(start + cfg.batch_size, n)) / (cfg.epochs * n)
             for group in opt.param_groups:
                 group["lr"] = max(cfg.lr * frac, 1e-5)
+        if cfg.sparse:
+            emb_opt.finish()  # untouched rows owe decay; settle it before val/export
         t_train = time.perf_counter() - t_epoch
         val_acc, _ = evaluate(raw, val_t, cfg.batch_size)
         print(
