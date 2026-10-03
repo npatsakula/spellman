@@ -13,7 +13,9 @@ exact RNG streams are part of the data contract):
 2. **Dedup** — source frames are concatenated in ``--source`` order, tagged
    with their source index, and deduplicated with
    ``unique(subset=["lang","text"], keep="first", maintain_order=True)``:
-   first source wins, encounter order preserved.
+   first source wins, encounter order preserved. ``--ortho-gate`` then
+   drops rows whose spelling contradicts their twin-language label
+   (``spellman_train.ortho``), in every source and split alike.
 3. **Split** — content-addressed by crc32 of (lang, text): identical samples
    land in identical splits regardless of source order or how often the mix
    is rebuilt.
@@ -53,6 +55,7 @@ from pathlib import Path
 import polars as pl
 
 from spellman_train import sources
+from spellman_train.ortho import contradicting_twin
 from spellman_train.paths import TRAIN_DIR
 from spellman_train.sources import parse_source, registered
 
@@ -347,6 +350,17 @@ def populate(ap: argparse.ArgumentParser) -> None:
         "in the same split (short-text regime training)",
     )
     ap.add_argument(
+        "--ortho-gate",
+        type=float,
+        default=0.0,
+        metavar="SHARE",
+        help="drop rows whose text is mostly a twin language of their label by "
+        "spelling (e.g. Ukrainian tweets labelled rus): the rival's estimated "
+        "share >= SHARE and the label's own < SHARE (0 = off; 0.5 recommended). "
+        "Mentions/URLs/numbers are ignored, so dirty rows are never dropped "
+        "for being dirty",
+    )
+    ap.add_argument(
         "--format",
         choices=("parquet", "jsonl"),
         default="parquet",
@@ -394,6 +408,19 @@ def run(args: argparse.Namespace) -> None:
         kept = kept.unique(subset=["lang", "text"], keep="first", maintain_order=True)
         print(f"  -> {kept.height - before} unique samples")
     assert kept is not None
+
+    if args.ortho_gate > 0:
+        rivals = [
+            contradicting_twin(lang, text, args.ortho_gate)
+            for lang, text in zip(kept["lang"].to_list(), kept["text"].to_list())
+        ]
+        dropped = kept.with_columns(_rival=pl.Series(rivals, dtype=pl.String)).filter(pl.col("_rival").is_not_null())
+        kept = kept.filter(pl.Series([r is None for r in rivals]))
+        pairs = dropped.group_by("lang", "_rival").len().sort("len", descending=True)
+        print(
+            f"ortho gate {args.ortho_gate}: dropped {dropped.height} rows — "
+            + ", ".join(f"{l}->{r} {n}" for l, r, n in pairs.iter_rows())
+        )
 
     # Content-addressed split assignment. crc32 has no Polars expression, and
     # the augmentation/cap/shuffle stages below need Python str rows anyway,
@@ -466,6 +493,7 @@ def run(args: argparse.Namespace) -> None:
         "wild_augment": args.wild_augment,
         "short_augment": args.short_augment,
         "short_floor": args.short_floor,
+        "ortho_gate": args.ortho_gate,
         "format": args.format,
         "splits": split_counts,
         "sources": [list(parse_source(spec)) for spec in args.source],
