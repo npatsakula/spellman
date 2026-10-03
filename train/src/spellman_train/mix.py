@@ -226,6 +226,17 @@ def cap_stratified(
     return out
 
 
+def parse_cap_overrides(items: list[str]) -> dict[str, int]:
+    """``["rus=240000", ...]`` -> ``{"rus": 240000}`` (--cap-override)."""
+    out: dict[str, int] = {}
+    for item in items:
+        lang, sep, n = item.partition("=")
+        if not sep or not lang or not n.isdigit():
+            raise SystemExit(f"--cap-override expects LANG=N, got {item!r}")
+        out[lang] = int(n)
+    return out
+
+
 def prebuild_colds(specs: list[str], jobs: int) -> None:
     """Build every cold cache in `specs`, one throwaway subprocess each.
 
@@ -326,6 +337,14 @@ def populate(ap: argparse.ArgumentParser) -> None:
         default=None,
         help="cap each language's rows per split (seeded subsample) so one "
         "dominant source cannot skew the val/test aggregates",
+    )
+    ap.add_argument(
+        "--cap-override",
+        action="append",
+        default=[],
+        metavar="LANG=N",
+        help="per-language cap replacing --cap-per-lang for LANG (repeatable, "
+        "e.g. rus=240000); other languages keep the uniform cap",
     )
     ap.add_argument(
         "--wild-augment",
@@ -443,21 +462,23 @@ def run(args: argparse.Namespace) -> None:
     # per capped language — Polars' sample/shuffle use their own RNG and
     # cannot reproduce random.Random.sample / .shuffle). The ordered rows are
     # handed back to Polars for the write.
+    overrides = parse_cap_overrides(args.cap_override)
     rng = random.Random(args.seed)
     args.out.mkdir(parents=True, exist_ok=True)
     split_counts: dict[str, int] = {}
     for split, rows in splits.items():
-        if args.cap_per_lang is not None:
+        if args.cap_per_lang is not None or overrides:
             by_lang: dict[str, list[tuple[str, str]]] = {}
             for row in rows:
                 by_lang.setdefault(row[0], []).append(row)
+            caps = {lang: overrides.get(lang, args.cap_per_lang) for lang in by_lang}
             rows = [
                 row
                 for lang in sorted(by_lang)
                 for row in (
                     by_lang[lang]
-                    if len(by_lang[lang]) <= args.cap_per_lang
-                    else cap_stratified(by_lang[lang], args.cap_per_lang, args.short_floor, args.seed)
+                    if caps[lang] is None or len(by_lang[lang]) <= caps[lang]
+                    else cap_stratified(by_lang[lang], caps[lang], args.short_floor, args.seed)
                 )
             ]
         rng.shuffle(rows)
@@ -494,6 +515,7 @@ def run(args: argparse.Namespace) -> None:
         "short_augment": args.short_augment,
         "short_floor": args.short_floor,
         "ortho_gate": args.ortho_gate,
+        **({"cap_override": overrides} if overrides else {}),
         "format": args.format,
         "splits": split_counts,
         "sources": [list(parse_source(spec)) for spec in args.source],

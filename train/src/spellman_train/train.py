@@ -38,6 +38,7 @@ from spellman_train.features import (
     bucket_tokens_flat,
     token_keys,
 )
+from spellman_train.mix import parse_cap_overrides
 from spellman_train.paths import MODEL_DIR, TRAIN_DIR
 from spellman_train.quantize import dequantize, quantize_int8_col, stats
 
@@ -203,14 +204,19 @@ def batches(data: Ragged, sels: list[np.ndarray], unique: bool, workers: int = 4
     return tn.Loader(tn.Prefetcher(node, prefetch_factor=ahead))
 
 
-def balance_train(rows: list[dict], cap: int, rng: np.random.Generator) -> list[dict]:
+def balance_train(
+    rows: list[dict], cap: int, rng: np.random.Generator, overrides: dict[str, int] | None = None
+) -> list[dict]:
+    """Subsample each language to ``cap`` rows (``overrides[lang]`` where
+    given, --cap-override)."""
     by_lang: dict[str, list[dict]] = {}
     for row in rows:
         by_lang.setdefault(row["lang"], []).append(row)
     out: list[dict] = []
     for lang, items in sorted(by_lang.items()):
-        if len(items) > cap:
-            items = list(rng.choice(items, size=cap, replace=False))
+        lang_cap = (overrides or {}).get(lang, cap)
+        if len(items) > lang_cap:
+            items = list(rng.choice(items, size=lang_cap, replace=False))
         out.extend(items)
     return out
 
@@ -469,6 +475,9 @@ def populate(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--weight-decay", type=float, default=0.01,
                     help="AdamW decoupled decay (0.01 = the historically-implicit torch default)")
     ap.add_argument("--per-lang-cap", type=int, default=50_000)
+    ap.add_argument("--cap-override", action="append", default=[], metavar="LANG=N",
+                    help="per-language train cap replacing --per-lang-cap for LANG "
+                    "(repeatable, e.g. rus=240000)")
     ap.add_argument("--head", choices=["linear", "mlp"], default="linear",
                     help="mlp = experiment: pool -> Linear(dim, hidden) -> GELU -> Linear; "
                     "not foldable, saves model.pt only (no runtime export)")
@@ -526,7 +535,7 @@ def run(args: argparse.Namespace) -> None:
     train_seed = cfg.seed if cfg.train_seed is None else cfg.train_seed
     rng = np.random.default_rng(train_seed)
     torch.manual_seed(train_seed)
-    train_rows = balance_train(train_rows, cfg.per_lang_cap, rng)
+    train_rows = balance_train(train_rows, cfg.per_lang_cap, rng, parse_cap_overrides(args.cap_override))
 
     train_t = featurize(train_rows, cfg)
     val_t = featurize(val_rows, cfg)
