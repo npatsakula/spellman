@@ -403,3 +403,29 @@ runtime on v15's gated test split (718,479 rows) and the referees.
 - **Bias correction rejected** (`bias_sweep.py`, float model.pt): the
   rus-logit shift that returns the 228k arm's drift to baseline (0.5-0.75)
   drops rus to 90-91%, below the baseline's 93.1.
+
+## Lexical twin gate (2026-10-03, branch exp/rus-coverage)
+
+`mix --lex-gate NATS` (`lexgate.py`, lexicon `seeds/lexgate/rus-ukr.tsv.gz`:
+314k words, log-odds measured on trusted lanes + 1.5M FineWeb-2 sentences
+per side). On the v15 recipe at 4 nats: **dropped 11,998 rows — rus->ukr
+11,353, ukr->rus 645**, after the ortho gate's 8,053.
+
+- All 11,353 come from one lane, `ukr_tweets` read with `twitter_lang=ru`
+  (40,941 rows): ortho drops 7,147, the lexical gate another 11,353, and
+  the remainder is still mostly not Russian (10.7% score 1-3 towards ukr,
+  29.6% carry no lexicon word, 19% lean rus). Hand audit of ~250 sampled
+  rows: drops at >=3 nats read Ukrainian throughout.
+- It also finds label noise in the referees' sources: 95 of COSMUS's 2,808
+  "russian" rows are Ukrainian, and **2,172 of the 2,808 COSMUS referee
+  rows sit in the train split** (lane 61) — COSMUS is no longer held out.
+- Sparse, 2 seeds each, on the lexically gated test split (717,289 rows):
+
+  | | test | <=20 | rus | rus<=20 | ukr | ukr<=20 | others<=20 | others->rus<=20 | rst |
+  |---|---|---|---|---|---|---|---|---|---|
+  | v15 mix | 98.67 / 98.65 | 94.54 / 94.39 | 94.77 / 94.74 | 88.42 / 88.59 | 97.07 / 96.74 | 94.52 / 93.91 | 94.80 / 94.64 | 0.61 / 0.68 | 97.58 / 97.43 |
+  | + lex gate 4 | 98.70 / 98.70 | 94.72 / 94.75 | 93.90 / 93.60 | 85.05 / 84.46 | 98.21 / 98.21 | 96.89 / 96.85 | 95.13 / 95.19 | 0.33 / 0.33 | 97.01 / 97.08 |
+
+  Ukrainian +1.3 (short +2.6), drift to rus halved, overall +0.04; Russian
+  short recall falls (-3.7 on test, rst -0.45): the gate removed 10k of
+  Russian's 37k short train rows and nothing replaced them.
