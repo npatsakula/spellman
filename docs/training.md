@@ -243,7 +243,10 @@ uv run spellman-train train --data data_mix --out ../model \
 Flags: `--log2-d` (bucket count D = 2^log2_d), `--hash-id
 {fmix32,murmur2,multiply_shift}`, `--seed`, `--dim`, `--epochs`,
 `--batch-size` (256), `--k` (tokens per training sample, 256), `--lr`,
-`--per-lang-cap` (50k train-side rebalance), `--hash-stats`, `--device`.
+`--per-lang-cap` (50k train-side rebalance), `--hash-stats`, `--device`,
+`--dense`, `--[no-]compile` (on), `--train-seed` (data order and head
+init; vary it, not the hash `--seed`, for replicates), `--head
+{linear,mlp}` (mlp is an experiment that cannot fold into `P`).
 `--data` reads parquet shards when present, else legacy `{split}.jsonl`.
 
 Details that matter:
@@ -254,6 +257,20 @@ Details that matter:
   space by construction.
 - AdamW with linear LR decay to zero across all epochs (fastText
   schedule). Embeddings zero-initialized (see design doc).
+- **Throughput** (full v14 budget, one epoch, M4 Max MPS): 140 s before
+  the rework → 81 s with `--dense` → 37 s with the default row-sparse
+  embedding updates. Rows are stored ragged (no padding to k: v14 rows
+  average ~283 of 512 tokens), pooled with `embedding_bag`, prepared on a
+  `torchdata.nodes` thread pipeline (the batch's distinct rows via a
+  bincount), copied to the device without blocking, and the whole forward
+  is `torch.compile`d with dynamic shapes.
+- **Sparse vs dense:** the default `LazyAdamW` updates only the rows a
+  batch touches; weight decay of untouched rows stays exact (caught up
+  from a prefix sum over the known LR schedule), but it drops dense
+  AdamW's momentum drift on untouched rows. On the v13f test split it
+  scored ~0.03pp below dense (linear 98.634/98.622 over two seeds vs
+  98.662; mlp 98.689/98.690 vs 98.709 — one dense run each), so release
+  recipes train with `--dense`; the sparse default is for experiments.
 - **θ calibration:** θ = 5th percentile of validation confidence; the
   runtime flags detections below it as uncertain.
 - **Hash A/B:** rerun with different `--hash-id` and compare val

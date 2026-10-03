@@ -11,5 +11,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 uv run spellman-train mix --from-manifest data/v13f/manifest.json --out data/v15 --ortho-gate 0.5 --jobs 3
+# --dense: dense AdamW over the embedding table, as v14 trained. The
+# row-sparse default is ~2x faster but scored ~0.03pp lower on the v13f
+# test split (one dense run per head; docs/training.md).
 uv run spellman-train train --data data/v15 --out model-v15 \
-  --log2-d 18 --k 512 --dim 128 --epochs 6 --lr 0.05 --per-lang-cap 120000 --device cuda
+  --log2-d 18 --k 512 --dim 128 --epochs 6 --lr 0.05 --per-lang-cap 120000 --dense \
+  --device "${DEVICE:-cuda}"
