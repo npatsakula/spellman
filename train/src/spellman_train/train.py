@@ -108,23 +108,28 @@ class Ragged:
     off: np.ndarray  # [N+1] int64
     y: np.ndarray  # [N] int64
     log2_d: int
+    #: [T] bool, lexical-channel tokens (word / word-pair keys); only kept
+    #: when --lexical-dropout needs to tell them from n-grams
+    lex: np.ndarray | None = None
 
     def __len__(self) -> int:
         return len(self.y)
 
 
-def featurize(rows: list[dict], cfg: Config) -> Ragged:
+def featurize(rows: list[dict], cfg: Config, with_lexical: bool = False) -> Ragged:
     """Featurize rows into a :class:`Ragged` set, keeping each row's first
     ``cfg.k`` tokens in reference encounter order.
 
     Batch-vectorized (bucket_tokens_flat, bit-exact with the scalar
     reference)."""
     y = np.array([LANG_TO_IDX[row["lang"]] for row in rows], dtype=np.int64)
-    buckets, negs, lens = [], [], []
+    buckets, negs, lens, lexs = [], [], [], []
     chunk = 20_000
     for t0 in tqdm(range(0, len(rows), chunk), desc="featurize", leave=False):
         part = rows[t0 : t0 + chunk]
-        b, ng, off = bucket_tokens_flat([r["text"] for r in part], cfg.log2_d, cfg.hash_id, cfg.seed)
+        b, ng, off, *lx = bucket_tokens_flat(
+            [r["text"] for r in part], cfg.log2_d, cfg.hash_id, cfg.seed, with_lexical=with_lexical
+        )
         off = np.asarray(off, dtype=np.int64)
         full = np.diff(off)
         # Position of every token inside its row; keep the first k.
@@ -132,6 +137,8 @@ def featurize(rows: list[dict], cfg: Config) -> Ragged:
         keep = pos < cfg.k
         buckets.append(np.asarray(b)[keep].astype(np.int32))
         negs.append(np.asarray(ng)[keep].astype(bool))
+        if with_lexical:
+            lexs.append(lx[0][keep])
         lens.append(np.minimum(full, cfg.k))
     lens_all = np.concatenate(lens) if lens else np.zeros(0, dtype=np.int64)
     return Ragged(
@@ -140,6 +147,7 @@ def featurize(rows: list[dict], cfg: Config) -> Ragged:
         off=np.concatenate([[0], np.cumsum(lens_all)]).astype(np.int64),
         y=y,
         log2_d=cfg.log2_d,
+        lex=(np.concatenate(lexs) if lexs else np.zeros(0, dtype=bool)) if with_lexical else None,
     )
 
 
@@ -171,13 +179,21 @@ def table_rows(data: Ragged) -> int:
     return (1 << data.log2_d) + 1
 
 
-def make_batch(data: Ragged, sel: np.ndarray, unique: bool) -> Batch:
+def make_batch(data: Ragged, sel: np.ndarray, unique: bool, drop: np.ndarray | None = None) -> Batch:
     """Gather rows ``sel`` of ``data`` (host side; runs in the prefetch
-    threads, so the GPU never waits on data-dependent shapes)."""
+    threads, so the GPU never waits on data-dependent shapes). Rows flagged
+    in ``drop`` (bool, aligned with ``sel``) lose their lexical-channel
+    tokens (--lexical-dropout)."""
     starts = data.off[sel]
     lens = data.off[sel + 1] - starts
     ends = np.cumsum(lens)
     pos = np.repeat(starts - (ends - lens), lens) + np.arange(ends[-1] if len(ends) else 0)
+    if drop is not None and drop.any():
+        keep = ~(data.lex[pos] & np.repeat(drop, lens))
+        kept = np.concatenate(([0], np.cumsum(keep)))
+        lens = kept[ends] - kept[ends - lens]
+        pos = pos[keep]
+        ends = np.cumsum(lens)
     ids = data.bucket[pos].astype(np.int64)
     sign = np.where(data.neg[pos], np.float32(-1), np.float32(1))
     rows = None
@@ -193,14 +209,14 @@ def make_batch(data: Ragged, sel: np.ndarray, unique: bool) -> Batch:
                  lens=lens.astype(np.float32), y=data.y[sel], rows=rows)
 
 
-def batches(data: Ragged, sels: list[np.ndarray], unique: bool, workers: int = 4, ahead: int = 8):
+def batches(data: Ragged, sels: list, unique: bool, workers: int = 4, ahead: int = 8):
     """Host batches for the row selections ``sels``, in order, built on a
     thread pool and kept ``ahead`` batches in front of the consumer (numpy
     releases the GIL in the gather and the unique-sort). Threads, not
     DataLoader worker processes: those would each receive a pickled copy of
     the multi-GB feature arrays."""
     node = tn.IterableWrapper(sels)
-    node = tn.ParallelMapper(node, map_fn=lambda sel: make_batch(data, sel, unique), num_workers=workers, method="thread")
+    node = tn.ParallelMapper(node, map_fn=lambda sel: make_batch(data, *sel, unique=unique) if isinstance(sel, tuple) else make_batch(data, sel, unique), num_workers=workers, method="thread")
     return tn.Loader(tn.Prefetcher(node, prefetch_factor=ahead))
 
 
@@ -478,6 +494,10 @@ def populate(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--cap-override", action="append", default=[], metavar="LANG=N",
                     help="per-language train cap replacing --per-lang-cap for LANG "
                     "(repeatable, e.g. rus=240000)")
+    ap.add_argument("--lexical-dropout", type=float, default=0.0, metavar="P",
+                    help="per training row and epoch, with probability P drop the row's "
+                    "whole-word and word-pair features so the model cannot lean on the "
+                    "lexical channel alone (0 = off; inference is unchanged)")
     ap.add_argument("--head", choices=["linear", "mlp"], default="linear",
                     help="mlp = experiment: pool -> Linear(dim, hidden) -> GELU -> Linear; "
                     "not foldable, saves model.pt only (no runtime export)")
@@ -537,7 +557,7 @@ def run(args: argparse.Namespace) -> None:
     torch.manual_seed(train_seed)
     train_rows = balance_train(train_rows, cfg.per_lang_cap, rng, parse_cap_overrides(args.cap_override))
 
-    train_t = featurize(train_rows, cfg)
+    train_t = featurize(train_rows, cfg, with_lexical=args.lexical_dropout > 0)
     val_t = featurize(val_rows, cfg)
 
     device = torch.device(args.device)
@@ -567,6 +587,9 @@ def run(args: argparse.Namespace) -> None:
         steps = 0
         t_epoch = time.perf_counter()
         sels = [order[s : s + cfg.batch_size] for s in range(0, n, cfg.batch_size)]
+        if args.lexical_dropout > 0:
+            dropped = rng.random(n) < args.lexical_dropout  # per row, redrawn every epoch
+            sels = [(sel, dropped[sel]) for sel in sels]
         loader = batches(train_t, sels, unique=cfg.sparse)
         in_flight: deque = deque(maxlen=16)  # host batches their async copies may still read
         for i, host in enumerate(tqdm(loader, total=len(sels), desc=f"epoch {epoch + 1}/{cfg.epochs}", leave=False)):
