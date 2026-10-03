@@ -17,6 +17,7 @@ bucket occupancy on the training tokens.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import time
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ import torch
 from safetensors.numpy import save_file
 from torch import nn
 import torch.nn.functional as F
+import torchdata.nodes as tn
 from tqdm import tqdm
 
 from spellman_train.features import (
@@ -91,39 +93,114 @@ def load_jsonl(path: Path) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def featurize(rows: list[dict], cfg: Config) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Returns (idx [N,K] i32 buckets, sign [N,K] i8, mask [N,K] i8, y [N] i64).
+@dataclass
+class Ragged:
+    """Featurized rows, stored flat: row ``i``'s tokens are
+    ``bucket[off[i]:off[i+1]]`` (first k only), signed by ``neg``.
 
-    Compact host storage (6 B/token instead of 16): the v14 budget (2.5M
-    rows x k=512) would not fit a 36 GB machine as i64/f32. Values are exact
-    (buckets < 2^31, sign/mask in {-1,0,1}); batches are widened on device.
+    No padding: the v14 budget's rows average ~283 of k=512 tokens, so the
+    padded [N, k] layout spent 45% of its memory and of every batch's gather
+    on padding."""
+
+    bucket: np.ndarray  # [T] int32
+    neg: np.ndarray  # [T] bool
+    off: np.ndarray  # [N+1] int64
+    y: np.ndarray  # [N] int64
+    log2_d: int
+
+    def __len__(self) -> int:
+        return len(self.y)
+
+
+def featurize(rows: list[dict], cfg: Config) -> Ragged:
+    """Featurize rows into a :class:`Ragged` set, keeping each row's first
+    ``cfg.k`` tokens in reference encounter order.
 
     Batch-vectorized (bucket_tokens_flat, bit-exact with the scalar
-    reference); the K-truncation takes the first k tokens in reference
-    encounter order, same as the per-row loop it replaced."""
-    n, k = len(rows), cfg.k
-    idx = np.zeros((n, k), dtype=np.int32)
-    sign = np.zeros((n, k), dtype=np.int8)
-    mask = np.zeros((n, k), dtype=np.int8)
-    y = np.zeros(n, dtype=np.int64)
-    for i, row in enumerate(rows):
-        y[i] = LANG_TO_IDX[row["lang"]]
-
+    reference)."""
+    y = np.array([LANG_TO_IDX[row["lang"]] for row in rows], dtype=np.int64)
+    buckets, negs, lens = [], [], []
     chunk = 20_000
-    for t0 in tqdm(range(0, n, chunk), desc="featurize", leave=False):
+    for t0 in tqdm(range(0, len(rows), chunk), desc="featurize", leave=False):
         part = rows[t0 : t0 + chunk]
-        buckets, negs, offsets = bucket_tokens_flat(
-            [r["text"] for r in part], cfg.log2_d, cfg.hash_id, cfg.seed
-        )
-        for i, _row in enumerate(part):
-            lo = offsets[i]
-            m = min(k, int(offsets[i + 1] - lo))
-            if m == 0:
-                continue
-            idx[t0 + i, :m] = buckets[lo : lo + m]
-            sign[t0 + i, :m] = np.where(negs[lo : lo + m], np.int8(-1), np.int8(1))
-            mask[t0 + i, :m] = 1
-    return idx, sign, mask, y
+        b, ng, off = bucket_tokens_flat([r["text"] for r in part], cfg.log2_d, cfg.hash_id, cfg.seed)
+        off = np.asarray(off, dtype=np.int64)
+        full = np.diff(off)
+        # Position of every token inside its row; keep the first k.
+        pos = np.arange(off[-1]) - np.repeat(off[:-1], full)
+        keep = pos < cfg.k
+        buckets.append(np.asarray(b)[keep].astype(np.int32))
+        negs.append(np.asarray(ng)[keep].astype(bool))
+        lens.append(np.minimum(full, cfg.k))
+    lens_all = np.concatenate(lens) if lens else np.zeros(0, dtype=np.int64)
+    return Ragged(
+        bucket=np.concatenate(buckets) if buckets else np.zeros(0, dtype=np.int32),
+        neg=np.concatenate(negs) if negs else np.zeros(0, dtype=bool),
+        off=np.concatenate([[0], np.cumsum(lens_all)]).astype(np.int64),
+        y=y,
+        log2_d=cfg.log2_d,
+    )
+
+
+@dataclass
+class Batch:
+    """One host batch of a :class:`Ragged` set, laid out for
+    ``embedding_bag``: ``ids`` are bucket ids, or with ``unique`` the
+    indices into ``rows`` (the batch's distinct buckets)."""
+
+    ids: np.ndarray  # [t] int64
+    sign: np.ndarray  # [t] f32
+    offsets: np.ndarray  # [b] int64, bag starts
+    lens: np.ndarray  # [b] f32
+    y: np.ndarray  # [b] int64
+    rows: np.ndarray | None = None  # [u] int64
+
+    def to(self, dev: torch.device) -> dict[str, torch.Tensor]:
+        """Copy to ``dev`` without blocking: a blocking host-to-MPS copy
+        waits for the GPU queue to drain, serializing host and GPU (3.8 ->
+        2.2 ms/step, measured). The copies read this batch's arrays
+        asynchronously, so the caller keeps the batch alive for a few steps.
+        """
+        fields = {k: v for k, v in vars(self).items() if v is not None}
+        return {k: torch.from_numpy(v).to(dev, non_blocking=True) for k, v in fields.items()}
+
+
+def table_rows(data: Ragged) -> int:
+    """Rows of the embedding table ``data``'s buckets index (D+1)."""
+    return (1 << data.log2_d) + 1
+
+
+def make_batch(data: Ragged, sel: np.ndarray, unique: bool) -> Batch:
+    """Gather rows ``sel`` of ``data`` (host side; runs in the prefetch
+    threads, so the GPU never waits on data-dependent shapes)."""
+    starts = data.off[sel]
+    lens = data.off[sel + 1] - starts
+    ends = np.cumsum(lens)
+    pos = np.repeat(starts - (ends - lens), lens) + np.arange(ends[-1] if len(ends) else 0)
+    ids = data.bucket[pos].astype(np.int64)
+    sign = np.where(data.neg[pos], np.float32(-1), np.float32(1))
+    rows = None
+    if unique:
+        # Buckets are dense small ints, so a bincount over the table finds
+        # the distinct rows in sorted order — np.unique's result, without
+        # its sort (0.5 vs 3.2 ms per batch).
+        rows = np.flatnonzero(np.bincount(ids, minlength=table_rows(data)))
+        rank = np.empty(table_rows(data), dtype=np.int64)
+        rank[rows] = np.arange(len(rows))
+        ids = rank[ids]
+    return Batch(ids=ids, sign=sign, offsets=(ends - lens).astype(np.int64),
+                 lens=lens.astype(np.float32), y=data.y[sel], rows=rows)
+
+
+def batches(data: Ragged, sels: list[np.ndarray], unique: bool, workers: int = 4, ahead: int = 8):
+    """Host batches for the row selections ``sels``, in order, built on a
+    thread pool and kept ``ahead`` batches in front of the consumer (numpy
+    releases the GIL in the gather and the unique-sort). Threads, not
+    DataLoader worker processes: those would each receive a pickled copy of
+    the multi-GB feature arrays."""
+    node = tn.IterableWrapper(sels)
+    node = tn.ParallelMapper(node, map_fn=lambda sel: make_batch(data, sel, unique), num_workers=workers, method="thread")
+    return tn.Loader(tn.Prefetcher(node, prefetch_factor=ahead))
 
 
 def balance_train(rows: list[dict], cap: int, rng: np.random.Generator) -> list[dict]:
@@ -138,20 +215,8 @@ def balance_train(rows: list[dict], cap: int, rng: np.random.Generator) -> list[
     return out
 
 
-def to_device(idx: np.ndarray, sign: np.ndarray, mask: np.ndarray, dev: torch.device):
-    """Widen one compact host batch (see featurize) to the net's dtypes."""
-    return (
-        torch.from_numpy(idx).to(dev).long(),
-        torch.from_numpy(sign).to(dev).float(),
-        torch.from_numpy(mask).to(dev).float(),
-    )
-
-
 class PooledHead(nn.Module):
-    """Classifier over the pooled embedding, isolated so torch.compile
-    covers exactly this subgraph: embedding inside the compiled region trips
-    an unstable inductor-on-MPS bug ("Tensor device mismatch" / "Placeholder
-    storage has not been allocated on MPS device").
+    """Classifier over the pooled embedding.
 
     With hidden > 0 (the --head mlp experiment) a Linear(dim, hidden) +
     GELU sits between pool and classifier; that net no longer folds."""
@@ -175,6 +240,12 @@ def mean_pool(table: torch.Tensor, idx: torch.Tensor, sign: torch.Tensor, mask: 
     """
     summed = F.embedding_bag(idx, table, per_sample_weights=sign * mask, mode="sum")
     return summed / mask.sum(1, keepdim=True).clamp(min=1.0)
+
+
+def bag_pool(table: torch.Tensor, b: dict[str, torch.Tensor]) -> torch.Tensor:
+    """:func:`mean_pool` over a device :class:`Batch` (flat ids + offsets)."""
+    summed = F.embedding_bag(b["ids"], table, b["offsets"], mode="sum", per_sample_weights=b["sign"])
+    return summed / b["lens"].clamp(min=1.0).unsqueeze(1)
 
 
 class SpellmanNet(nn.Module):
@@ -265,21 +336,22 @@ def lr_schedule(cfg: Config, n: int) -> np.ndarray:
 
 
 @torch.no_grad()
-def evaluate(model: SpellmanNet, tensors: tuple, batch_size: int) -> tuple[float, np.ndarray]:
+def evaluate(model: SpellmanNet, data: Ragged, batch_size: int) -> tuple[float, np.ndarray]:
     model.eval()
-    idx, sign, mask, y = tensors
+    dev = next(model.parameters()).device
     correct = 0
     confs: list[np.ndarray] = []
-    for start in range(0, len(y), batch_size):
-        sl = slice(start, start + batch_size)
-        dev = next(model.parameters()).device
-        logits = model(*to_device(idx[sl], sign[sl], mask[sl], dev))
+    sels = [np.arange(s, min(s + batch_size, len(data))) for s in range(0, len(data), batch_size)]
+    for batch in batches(data, sels, unique=False):
+        # .cpu() below syncs every batch, so its async copies are done
+        # before the next batch replaces it.
+        logits = model.post(bag_pool(model.emb.weight, batch.to(dev)))
         probs = torch.softmax(logits, dim=-1).cpu().numpy()
         pred = probs.argmax(1)
-        correct += int((pred == y[sl]).sum())
+        correct += int((pred == batch.y).sum())
         confs.append(probs[np.arange(len(pred)), pred])
     model.train()
-    return correct / len(y), np.concatenate(confs)
+    return correct / len(data), np.concatenate(confs)
 
 
 def chi_square_stats(train_rows: list[dict], cfg: Config) -> float:
@@ -315,14 +387,19 @@ def table_accuracy(p: np.ndarray, bias: np.ndarray, tensors: tuple, batch: int =
     """Accuracy of the folded-table scorer on featurized tensors — the exact
     computation the runtime performs (gather ±rows, mean over tokens, +bias).
     Used to gate quantized storage formats against the f16 fold."""
-    idx, sign, mask, y = tensors
+    data: Ragged = tensors
     correct = 0
-    for start in range(0, len(y), batch):
-        sl = slice(start, start + batch)
-        n = np.maximum(mask[sl].sum(1, keepdims=True), 1.0)
-        logits = (p[idx[sl]] * sign[sl][..., None].astype(np.float32)).sum(1) / n + bias
-        correct += int((logits.argmax(1) == y[sl]).sum())
-    return correct / len(y)
+    for start in range(0, len(data), batch):
+        b = make_batch(data, np.arange(start, min(start + batch, len(data))), unique=False)
+        sums = np.zeros((len(b.y), p.shape[1]), dtype=np.float32)
+        full = b.lens > 0
+        if full.any():
+            # reduceat over non-empty bags only: an empty bag has no tokens,
+            # so the segments between non-empty starts are exactly the bags.
+            sums[full] = np.add.reduceat(p[b.ids] * b.sign[:, None], b.offsets[full], axis=0)
+        logits = sums / np.maximum(b.lens, 1.0)[:, None] + bias
+        correct += int((logits.argmax(1) == b.y).sum())
+    return correct / len(data)
 
 
 def export(model: SpellmanNet, cfg: Config, theta: float, out_dir: Path, max_drop: float, val_t: tuple) -> None:
@@ -408,9 +485,8 @@ def populate(ap: argparse.ArgumentParser) -> None:
         "--compile",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="torch.compile the classifier (on by default; M4 Max, sparse "
-        "updates: 9.6 -> 7.9 ms/step before embedding_bag pooling; warmup ~1s, "
-        "two extra recompiles for the partial eval batches)",
+        help="torch.compile the forward pass (on by default; M4 Max, ragged "
+        "sparse batches: 6.9 -> 3.5 ms/step; warmup < 1s)",
     )
     ap.add_argument(
         "--quant-max-drop",
@@ -458,7 +534,7 @@ def run(args: argparse.Namespace) -> None:
     device = torch.device(args.device)
     hidden = cfg.hidden if cfg.head == "mlp" else 0
     model = SpellmanNet(1 << cfg.log2_d, cfg.dim, len(LANGUAGES), hidden).to(device)
-    n = len(train_t[3])
+    n = len(train_t)
     lrs = lr_schedule(cfg, n)
     if cfg.sparse:
         # The embedding table goes to LazyAdamW; only the head is dense.
@@ -467,35 +543,44 @@ def run(args: argparse.Namespace) -> None:
     else:
         opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     raw = model  # eval/export use the uncompiled module
-    # Compile into a separate handle: assigning it back to model.post would
-    # prefix the saved state_dict keys with `_orig_mod.`.
-    post = torch.compile(model.post) if args.compile else model.post
+
+    def forward(table: torch.Tensor, b: dict[str, torch.Tensor]) -> torch.Tensor:
+        return model.post(bag_pool(table, b))
+
+    # The whole forward, embedding_bag included (torch 2.14.1 on MPS; the
+    # inductor-on-MPS embedding bug the head-only compile once dodged is
+    # gone). dynamic=True: token and unique-row counts change every batch.
+    if args.compile:
+        forward = torch.compile(forward, dynamic=True)
     for epoch in range(cfg.epochs):
         order = rng.permutation(n)
-        losses = []
+        loss_sum = torch.zeros((), device=device)  # read once per epoch: no per-step sync
+        steps = 0
         t_epoch = time.perf_counter()
-        for start in tqdm(range(0, n, cfg.batch_size), desc=f"epoch {epoch + 1}/{cfg.epochs}", leave=False):
-            sel = order[start : start + cfg.batch_size]
-            idx, sign, mask = to_device(train_t[0][sel], train_t[1][sel], train_t[2][sel], device)
-            y = torch.from_numpy(train_t[3][sel]).to(device)
+        sels = [order[s : s + cfg.batch_size] for s in range(0, n, cfg.batch_size)]
+        loader = batches(train_t, sels, unique=cfg.sparse)
+        in_flight: deque = deque(maxlen=16)  # host batches their async copies may still read
+        for i, host in enumerate(tqdm(loader, total=len(sels), desc=f"epoch {epoch + 1}/{cfg.epochs}", leave=False)):
+            in_flight.append(host)
+            b = host.to(device)
             if cfg.sparse:
-                # Gather each touched row once as a leaf: backward then
-                # yields one summed gradient per unique row, never a dense
-                # (D+1)·dim one.
-                rows, inverse = torch.unique(idx, return_inverse=True)
-                leaf = raw.emb.weight.detach()[rows].requires_grad_()
-                logits = post(mean_pool(leaf, inverse, sign, mask))
+                # Gather each touched row once as a leaf (the host batch
+                # already deduplicated them): backward then yields one summed
+                # gradient per unique row, never a dense (D+1)·dim one.
+                leaf = raw.emb.weight.detach()[b["rows"]].requires_grad_()
+                logits = forward(leaf, b)
             else:
-                logits = post(mean_pool(model.emb.weight, idx, sign, mask))
-            loss = nn.functional.cross_entropy(logits, y)
+                logits = forward(model.emb.weight, b)
+            loss = nn.functional.cross_entropy(logits, b["y"])
             opt.zero_grad()
             loss.backward()
             opt.step()
             if cfg.sparse:
-                emb_opt.step(rows, leaf.grad)
-            losses.append(float(loss))
+                emb_opt.step(b["rows"], leaf.grad)
+            loss_sum += loss.detach()
+            steps += 1
             # Linear decay to zero across all epochs (fastText-style).
-            frac = 1.0 - (epoch * n + min(start + cfg.batch_size, n)) / (cfg.epochs * n)
+            frac = 1.0 - (epoch * n + min((i + 1) * cfg.batch_size, n)) / (cfg.epochs * n)
             for group in opt.param_groups:
                 group["lr"] = max(cfg.lr * frac, 1e-5)
         if cfg.sparse:
@@ -503,7 +588,7 @@ def run(args: argparse.Namespace) -> None:
         t_train = time.perf_counter() - t_epoch
         val_acc, _ = evaluate(raw, val_t, cfg.batch_size)
         print(
-            f"epoch {epoch + 1}: loss {sum(losses) / len(losses):.4f}, val acc {val_acc:.4f}, "
+            f"epoch {epoch + 1}: loss {float(loss_sum) / steps:.4f}, val acc {val_acc:.4f}, "
             f"train {t_train:.0f}s",
             flush=True,
         )
