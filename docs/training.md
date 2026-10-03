@@ -197,6 +197,24 @@ uv run spellman-train clean cache/<name>-*.jsonl [--conf 0.995] [--script] [--dr
 per-cache work is single-threaded numpy, so a 32-core box finishes the
 ~100-cache pass in minutes instead of half an hour).
 
+**Orthographic gate** (`mix --ortho-gate 0.5`): twin protection leaves
+the close groups to spelling. Each twin has letters the other never
+writes (і ї є ґ vs ы э ё ъ), so the mixer estimates, per row, how much
+of the text reads as each language from those letters and their typical
+rates (`ortho.py`), and drops a row when the rival's share ≥ 0.5 and the
+label's own share < 0.5. Presence alone never fires it: a long Russian
+document quoting a Ukrainian sentence stays; a Ukrainian tweet that
+Twitter's `lang=ru` tag delivered as Russian goes. Only real words count
+(mentions, URLs, emails and numbers are skipped, hashtags lose their
+`#`, as in the featurizer), and Turkic variant spellings fold first
+(ҥ→ң, ђ→ҕ: Sakha typed with ң, Tuvan with ҥ). On the v13f mix it drops
+8,050 of 2.52M train rows, 7,465 of them Ukrainian labelled `rus`
+(6.2% of rus train), and matches the 693 such rows in test; against a
+200-row hand audit of model errors it removed 0 of 54 correctly
+labelled fixable rows. It runs at mix time over every source and split,
+so it also cleans val/test: compare models before and after on the same
+gated test split.
+
 Rerun after any cache rebuild — a rebuild re-downloads the dirty
 upstream data. The short-text lane (3–19 char rows, under the token
 guard) gets `short-verify` instead: 3-judge consensus (spellman, GlotLID,
