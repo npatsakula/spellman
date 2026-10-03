@@ -55,6 +55,7 @@ from pathlib import Path
 import polars as pl
 
 from spellman_train import sources
+from spellman_train.lexgate import contradicting_lexicon, load_lexicons
 from spellman_train.ortho import contradicting_twin
 from spellman_train.paths import TRAIN_DIR
 from spellman_train.sources import parse_source, registered
@@ -380,6 +381,17 @@ def populate(ap: argparse.ArgumentParser) -> None:
         "for being dirty",
     )
     ap.add_argument(
+        "--lex-gate",
+        type=float,
+        default=0.0,
+        metavar="NATS",
+        help="drop rows whose words say they are written in a twin language of "
+        "their label (short Ukrainian tweets labelled rus that carry no "
+        "Ukrainian-only letter): summed word log-odds towards the twin >= NATS, "
+        "from the lexicons under seeds/lexgate/ (0 = off; 4 recommended). "
+        "Runs after --ortho-gate",
+    )
+    ap.add_argument(
         "--format",
         choices=("parquet", "jsonl"),
         default="parquet",
@@ -438,6 +450,20 @@ def run(args: argparse.Namespace) -> None:
         pairs = dropped.group_by("lang", "_rival").len().sort("len", descending=True)
         print(
             f"ortho gate {args.ortho_gate}: dropped {dropped.height} rows — "
+            + ", ".join(f"{l}->{r} {n}" for l, r, n in pairs.iter_rows())
+        )
+
+    if args.lex_gate > 0:
+        gated = set(load_lexicons())
+        rivals = [
+            contradicting_lexicon(lang, text, args.lex_gate) if lang in gated else None
+            for lang, text in zip(kept["lang"].to_list(), kept["text"].to_list())
+        ]
+        dropped = kept.with_columns(_rival=pl.Series(rivals, dtype=pl.String)).filter(pl.col("_rival").is_not_null())
+        kept = kept.filter(pl.Series([r is None for r in rivals]))
+        pairs = dropped.group_by("lang", "_rival").len().sort("len", descending=True)
+        print(
+            f"lex gate {args.lex_gate}: dropped {dropped.height} rows — "
             + ", ".join(f"{l}->{r} {n}" for l, r, n in pairs.iter_rows())
         )
 
@@ -516,6 +542,7 @@ def run(args: argparse.Namespace) -> None:
         "short_floor": args.short_floor,
         "ortho_gate": args.ortho_gate,
         **({"cap_override": overrides} if overrides else {}),
+        **({"lex_gate": args.lex_gate} if args.lex_gate > 0 else {}),
         "format": args.format,
         "splits": split_counts,
         "sources": [list(parse_source(spec)) for spec in args.source],
