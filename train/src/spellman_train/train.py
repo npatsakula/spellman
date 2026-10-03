@@ -216,7 +216,7 @@ def batches(data: Ragged, sels: list, unique: bool, workers: int = 4, ahead: int
     DataLoader worker processes: those would each receive a pickled copy of
     the multi-GB feature arrays."""
     node = tn.IterableWrapper(sels)
-    node = tn.ParallelMapper(node, map_fn=lambda sel: make_batch(data, *sel, unique=unique) if isinstance(sel, tuple) else make_batch(data, sel, unique), num_workers=workers, method="thread")
+    node = tn.ParallelMapper(node, map_fn=lambda sel: make_batch(data, sel[0], unique, sel[1]) if isinstance(sel, tuple) else make_batch(data, sel, unique), num_workers=workers, method="thread")
     return tn.Loader(tn.Prefetcher(node, prefetch_factor=ahead))
 
 
