@@ -358,3 +358,48 @@ held-out file + the five frozen referees):
   deltas of the winning row vs plain d18 are within seed spread — the
   durable wins of the whole campaign are short (+0.7–1.2) and held-out
   (+0.07 stable across seeds).
+
+## v15 build + the Russian-coverage sweep (2026-10-03, branch exp/rus-coverage)
+
+Scripts: `train/exp/rus_coverage/`. All arms scored through the Rust
+runtime on v15's gated test split (718,479 rows) and the referees.
+
+- **v15 built** (`recipes/v15.sh`, dense, torch 2.13.0+cu130 — the box's
+  lock, not 2.14.1): 0/99 cold caches; gate dropped 8,053 rows (rus->ukr
+  7,132); epochs 90-92 s; quant gate 0.9769 -> 0.9775; theta 0.819
+  (5th-percentile, not yet F1-recalibrated). v14 -> v15 on the gated
+  split: 98.66 -> 98.69, <=20 94.12 -> 94.38, rus 91.90 -> 92.31, ukr
+  95.81 -> 96.87; rst 96.78 -> 96.55, cosmus 97.36 -> 97.93, short 94.77
+  -> 97.04, tatoeba 99.03 -> 99.00.
+- **The gate leaves short Ukrainian behind**: 400 of v15's 754 rus test
+  errors are predicted ukr, 379 of them <=20 chars, 3 with any of і ї є ґ;
+  ~70 of an 80-row sample read as Ukrainian. Rus test accuracy is
+  therefore a noisy metric; rusentitweet/COSMUS are the cleaner ones.
+- **Unseen words: narrow effect.** Rows whose words are *all* absent from
+  train fail 4-10x more often (rus test minus rus->ukr rows: 13.9% vs
+  3.75%; rst 20.4% vs 3.1%) but are ~5% of rows and hold ~1/5-1/4 of the
+  errors; rows with *some* unseen words fail no more often above 20
+  chars. Ukrainian shows the same shape.
+- **The uniform cap does not bind for rus**: 113,250 train rows in v15.
+  `--cap-override` alone is a no-op; arms add FineWeb-2 rus sentences
+  (pool of 1.5M, ~186 MB streamed), hygiene-cleaned.
+- **Sweep (sparse trainer, 2 train seeds per arm; s1 / s2):**
+
+  | arm (rus train rows) | test | rus | rst | cosmus | tatoeba | others->rus |
+  |---|---|---|---|---|---|---|
+  | v15 base (113k) | 98.63 / 98.61 | 92.83 / 93.27 | 97.58 / 97.43 | 97.72 / 97.61 | 98.90 / 98.93 | 0.30 / 0.31 |
+  | random +70k (195k) | 98.61 / 98.60 | 93.58 / 93.65 | 97.74 / 97.89 | 97.72 / 97.65 | 98.87 / 98.90 | 0.37 / 0.37 |
+  | diverse 80k (194k) | 98.60 / 98.60 | 93.75 / 93.92 | 97.89 / 98.12 | 97.72 / 97.79 | 98.87 / 98.82 | 0.42 / 0.40 |
+  | random +100k (228k) | 98.59 / 98.60 | 94.27 / 94.12 | 98.23 / 98.12 | 97.86 / 97.83 | 98.83 / 98.82 | 0.41 / 0.40 |
+  | random +300k (458k) | 98.54 / 98.57 | 94.19 / 94.17 | 98.35 / 98.04 | 98.04 / 98.08 | 98.73 / 98.77 | 0.48 / 0.47 |
+  | base + lexical dropout 0.3 | 98.62 / 98.65 | 92.79 / 92.94 | 97.35 / 97.47 | 97.26 / 97.58 | 98.92 / 98.91 | 0.30 / 0.31 |
+  | 228k + lexical dropout 0.3 | 98.58 / 98.61 | 94.63 / 93.34 | 98.16 / 97.74 | 98.04 / 97.65 | 98.81 / 98.83 | 0.42 / 0.39 |
+
+  More Russian helps Russian (+1.1 test, +0.7 rst at 228k) and saturates
+  there; overall test never improves and tatoeba and the others' drift to
+  rus worsen monotonically with Russian's share. Diverse selection beats
+  random at equal size by ~0.2 on rus/rst, within reach of seed spread.
+  Lexical dropout does nothing for Russian (test <=20 +0.2 overall).
+- **Bias correction rejected** (`bias_sweep.py`, float model.pt): the
+  rus-logit shift that returns the 228k arm's drift to baseline (0.5-0.75)
+  drops rus to 90-91%, below the baseline's 93.1.
