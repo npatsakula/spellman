@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,6 +60,10 @@ class Config:
     #: ~e^-2.5 between touches. --weight-decay 0 is the A/B knob.
     weight_decay: float = 0.01
     per_lang_cap: int = 50_000
+    #: "linear" folds into P = E·W at export; "mlp" (experiment) puts a
+    #: Linear(dim, hidden) -> GELU between pool and classifier and cannot fold.
+    head: str = "linear"
+    hidden: int = 256
 
 def load_split(data_dir: Path, split: str) -> list[dict]:
     """Read one split of a mix: parquet shard if present, else legacy jsonl.
@@ -79,15 +84,19 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def featurize(rows: list[dict], cfg: Config) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Returns (idx [N,K] i64 buckets, sign [N,K] f32, mask [N,K] f32, y [N] i64).
+    """Returns (idx [N,K] i32 buckets, sign [N,K] i8, mask [N,K] i8, y [N] i64).
+
+    Compact host storage (6 B/token instead of 16): the v14 budget (2.5M
+    rows x k=512) would not fit a 36 GB machine as i64/f32. Values are exact
+    (buckets < 2^31, sign/mask in {-1,0,1}); batches are widened on device.
 
     Batch-vectorized (bucket_tokens_flat, bit-exact with the scalar
     reference); the K-truncation takes the first k tokens in reference
     encounter order, same as the per-row loop it replaced."""
     n, k = len(rows), cfg.k
-    idx = np.zeros((n, k), dtype=np.int64)
-    sign = np.zeros((n, k), dtype=np.float32)
-    mask = np.zeros((n, k), dtype=np.float32)
+    idx = np.zeros((n, k), dtype=np.int32)
+    sign = np.zeros((n, k), dtype=np.int8)
+    mask = np.zeros((n, k), dtype=np.int8)
     y = np.zeros(n, dtype=np.int64)
     for i, row in enumerate(rows):
         y[i] = LANG_TO_IDX[row["lang"]]
@@ -104,8 +113,8 @@ def featurize(rows: list[dict], cfg: Config) -> tuple[np.ndarray, np.ndarray, np
             if m == 0:
                 continue
             idx[t0 + i, :m] = buckets[lo : lo + m]
-            sign[t0 + i, :m] = np.where(negs[lo : lo + m], np.float32(-1.0), np.float32(1.0))
-            mask[t0 + i, :m] = 1.0
+            sign[t0 + i, :m] = np.where(negs[lo : lo + m], np.int8(-1), np.int8(1))
+            mask[t0 + i, :m] = 1
     return idx, sign, mask, y
 
 
@@ -121,27 +130,40 @@ def balance_train(rows: list[dict], cap: int, rng: np.random.Generator) -> list[
     return out
 
 
+def to_device(idx: np.ndarray, sign: np.ndarray, mask: np.ndarray, dev: torch.device):
+    """Widen one compact host batch (see featurize) to the net's dtypes."""
+    return (
+        torch.from_numpy(idx).to(dev).long(),
+        torch.from_numpy(sign).to(dev).float(),
+        torch.from_numpy(mask).to(dev).float(),
+    )
+
+
 class PooledHead(nn.Module):
     """Mean-pool + linear head, isolated so torch.compile covers exactly
     this subgraph: embedding inside the compiled region trips an unstable
     inductor-on-MPS bug ("Tensor device mismatch" / "Placeholder storage
     has not been allocated on MPS device"), while the gather itself is
-    memory-bound and gains little from compilation."""
+    memory-bound and gains little from compilation.
 
-    def __init__(self, dim: int, n_classes: int):
+    With hidden > 0 (the --head mlp experiment) a Linear(dim, hidden) +
+    GELU sits between pool and classifier; that net no longer folds."""
+
+    def __init__(self, dim: int, n_classes: int, hidden: int = 0):
         super().__init__()
-        self.head = nn.Linear(dim, n_classes)
+        self.mlp = nn.Sequential(nn.Linear(dim, hidden), nn.GELU()) if hidden else nn.Identity()
+        self.head = nn.Linear(hidden or dim, n_classes)
 
     def forward(self, e: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         pooled = (e * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp(min=1.0)
-        return self.head(pooled)
+        return self.head(self.mlp(pooled))
 
 
 class SpellmanNet(nn.Module):
-    def __init__(self, d_buckets: int, dim: int, n_classes: int):
+    def __init__(self, d_buckets: int, dim: int, n_classes: int, hidden: int = 0):
         super().__init__()
         self.emb = nn.Embedding(d_buckets + 1, dim)  # +1: padding row D, zeroed at export
-        self.post = PooledHead(dim, n_classes)
+        self.post = PooledHead(dim, n_classes, hidden)
         # Zero-init (fastText convention): untrained buckets must fold to
         # exactly-zero logits through P = E·W. With random init, rare-word
         # n-grams that land in never-updated buckets contribute arbitrary
@@ -167,11 +189,7 @@ def evaluate(model: SpellmanNet, tensors: tuple, batch_size: int) -> tuple[float
     for start in range(0, len(y), batch_size):
         sl = slice(start, start + batch_size)
         dev = next(model.parameters()).device
-        logits = model(
-            torch.from_numpy(idx[sl]).to(dev),
-            torch.from_numpy(sign[sl]).to(dev),
-            torch.from_numpy(mask[sl]).to(dev),
-        )
+        logits = model(*to_device(idx[sl], sign[sl], mask[sl], dev))
         probs = torch.softmax(logits, dim=-1).cpu().numpy()
         pred = probs.argmax(1)
         correct += int((pred == y[sl]).sum())
@@ -218,7 +236,7 @@ def table_accuracy(p: np.ndarray, bias: np.ndarray, tensors: tuple, batch: int =
     for start in range(0, len(y), batch):
         sl = slice(start, start + batch)
         n = np.maximum(mask[sl].sum(1, keepdims=True), 1.0)
-        logits = (p[idx[sl]] * sign[sl][..., None]).sum(1) / n + bias
+        logits = (p[idx[sl]] * sign[sl][..., None].astype(np.float32)).sum(1) / n + bias
         correct += int((logits.argmax(1) == y[sl]).sum())
     return correct / len(y)
 
@@ -290,6 +308,10 @@ def populate(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--weight-decay", type=float, default=0.01,
                     help="AdamW decoupled decay (0.01 = the historically-implicit torch default)")
     ap.add_argument("--per-lang-cap", type=int, default=50_000)
+    ap.add_argument("--head", choices=["linear", "mlp"], default="linear",
+                    help="mlp = experiment: pool -> Linear(dim, hidden) -> GELU -> Linear; "
+                    "not foldable, saves model.pt only (no runtime export)")
+    ap.add_argument("--hidden", type=int, default=256)
     ap.add_argument("--hash-stats", action="store_true")
     ap.add_argument("--device", default="cpu")
     ap.add_argument(
@@ -320,6 +342,8 @@ def run(args: argparse.Namespace) -> None:
         lr=args.lr,
         weight_decay=args.weight_decay,
         per_lang_cap=args.per_lang_cap,
+        head=args.head,
+        hidden=args.hidden,
     )
 
     train_rows = load_split(args.data, "train")
@@ -337,7 +361,8 @@ def run(args: argparse.Namespace) -> None:
     val_t = featurize(val_rows, cfg)
 
     device = torch.device(args.device)
-    model = SpellmanNet(1 << cfg.log2_d, cfg.dim, len(LANGUAGES)).to(device)
+    hidden = cfg.hidden if cfg.head == "mlp" else 0
+    model = SpellmanNet(1 << cfg.log2_d, cfg.dim, len(LANGUAGES), hidden).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     raw = model  # eval/export use the uncompiled module
     if args.compile:
@@ -346,11 +371,10 @@ def run(args: argparse.Namespace) -> None:
     for epoch in range(cfg.epochs):
         order = rng.permutation(n)
         losses = []
+        t_epoch = time.perf_counter()
         for start in tqdm(range(0, n, cfg.batch_size), desc=f"epoch {epoch + 1}/{cfg.epochs}", leave=False):
             sel = order[start : start + cfg.batch_size]
-            idx = torch.from_numpy(train_t[0][sel]).to(device)
-            sign = torch.from_numpy(train_t[1][sel]).to(device)
-            mask = torch.from_numpy(train_t[2][sel]).to(device)
+            idx, sign, mask = to_device(train_t[0][sel], train_t[1][sel], train_t[2][sel], device)
             y = torch.from_numpy(train_t[3][sel]).to(device)
             logits = model(idx, sign, mask)
             loss = nn.functional.cross_entropy(logits, y)
@@ -362,15 +386,25 @@ def run(args: argparse.Namespace) -> None:
             frac = 1.0 - (epoch * n + min(start + cfg.batch_size, n)) / (cfg.epochs * n)
             for group in opt.param_groups:
                 group["lr"] = max(cfg.lr * frac, 1e-5)
+        t_train = time.perf_counter() - t_epoch
         val_acc, _ = evaluate(raw, val_t, cfg.batch_size)
-        print(f"epoch {epoch + 1}: loss {sum(losses) / len(losses):.4f}, val acc {val_acc:.4f}", flush=True)
+        print(
+            f"epoch {epoch + 1}: loss {sum(losses) / len(losses):.4f}, val acc {val_acc:.4f}, "
+            f"train {t_train:.0f}s",
+            flush=True,
+        )
 
     # θ calibration: 5th percentile of validation prediction confidence —
     # detections below θ are flagged uncertain by the runtime.
     _, val_confs = evaluate(raw, val_t, cfg.batch_size)
     theta = float(np.percentile(val_confs, 5))
 
-    export(raw, cfg, theta, args.out, args.quant_max_drop, val_t)
+    args.out.mkdir(parents=True, exist_ok=True)
+    torch.save({"config": vars(cfg), "state_dict": raw.state_dict()}, args.out / "model.pt")
+    if cfg.head == "mlp":
+        print(f"saved {args.out / 'model.pt'} (mlp head: no folded export)")
+    else:
+        export(raw, cfg, theta, args.out, args.quant_max_drop, val_t)
     write_eval_tsv(test_rows, args.out / "eval_test.tsv")
     write_eval_tsv(val_rows, args.out / "eval_val.tsv")
     print("wrote eval_test.tsv / eval_val.tsv (feed to `cargo run --release --bin assess`)")
