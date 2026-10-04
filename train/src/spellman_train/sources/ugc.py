@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Iterator
 
 from . import CACHE_DIR, Dataset, cyrillic_ratio, download_with_retries, register
+from ..lexgate import own_margin
 
 RAW = CACHE_DIR / "raw"
 
@@ -57,8 +58,15 @@ class UkrTweets(Dataset):
     min_chars: int = 20
     max_chars: int = 0
     cyr: float = 0.5
+    #: Keep only rows whose words are the label's own by at least this many
+    #: nats against every twin (lexgate.own_margin; 0 = off). Twitter's
+    #: ``lang`` tag is unreliable on short tweets — most of this corpus's
+    #: short ``ru`` rows are Ukrainian or undecidable — so the Russian tail
+    #: is taken only where the words say Russian.
+    lex_own: float = 0.0
 
     name = "ukr_tweets"
+    late_options = ("lex_own",)
 
     def samples(self) -> Iterator[tuple[str, str]]:
         import pandas as pd
@@ -86,6 +94,8 @@ class UkrTweets(Dataset):
                 if len(t) < self.min_chars or (self.max_chars and len(t) > self.max_chars):
                     continue
                 if cyrillic_ratio(t) < self.cyr:
+                    continue
+                if self.lex_own > 0 and own_margin(self.lang, t) < self.lex_own:
                     continue
                 yield self.lang, t
                 n += 1
@@ -180,6 +190,8 @@ class KazSandra(Dataset):
                 if len(t) < self.min_chars or (self.max_chars and len(t) > self.max_chars):
                     continue
                 if cyrillic_ratio(t) < self.cyr:
+                    continue
+                if self.lex_own > 0 and own_margin(self.lang, t) < self.lex_own:
                     continue
                 yield self.lang, t
                 n += 1

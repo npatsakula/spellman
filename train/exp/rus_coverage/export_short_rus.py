@@ -1,4 +1,8 @@
-"""Short colloquial Russian pools for the mix, from open chat/forum dumps.
+"""Short colloquial Russian pools, from open chat/forum dumps.
+
+Superseded for training by the `hf` lanes of recipes/v16.sh (`drop_long`,
+`sample`); kept for the sweep arms of docs/experiments.md and for the
+ok.ru probe (`okru-probe.tsv`, 5,000 short comments held out of every mix).
 
 The `hf` lane truncates at max_chars instead of dropping, so naturally
 short rows are exported here once into `cache/short-rus/<name>.jsonl`

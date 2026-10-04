@@ -487,3 +487,34 @@ rst: sparse v16 is 0.4 below sparse v15 on the 3-seed mean (97.02 vs
 97.45); the dense pair goes the other way (+0.15). Dense per-language
 moves >= 0.15: ukr +1.39, rus +0.32, srp +0.17, mkd -0.27, bak -0.21,
 che -0.17. short_eval's drop is its 42 formerly-in-train rus rows.
+
+## v16 final build — referees held out, HF lanes (2026-10-04)
+
+- **COSMUS fixed.** The COSMUS Russian lane *was* the referee (2,172 of
+  2,808 rows in v15's train split, the rest in val/test). `recipes/v16.sh`
+  retires the lane (`mix --drop-source`) and `mix --holdout FILE.tsv` keeps
+  every referee row out of all splits (141 rows dropped: chv 47, ukr 42,
+  rus 19, …). `cosmus_rus_eval_v2.tsv` = the referee minus its 95
+  Ukrainian rows (lexical gate >= 4; all 45 lowest-scoring ones read
+  Ukrainian) — 2,713 rows. **COSMUS numbers before v16 are not held-out.**
+- **The short-Russian pools are plain `hf:` lanes now** (`drop_long=True`
+  drops instead of truncating, `sample=N` takes a seeded random N of the
+  distinct passing rows) and the tweet lane keeps its Russian rows by
+  `lex_own=3` (3,108 rows) — so `spellman-train fetch --manifest
+  data/v16/manifest.json` builds everything; no pre-export. New adapter
+  options are `late_options`: out of the cache fingerprint at their
+  default, so the 97 existing caches stayed warm (5/102 cold = the new
+  lanes). ruforum needs `uv run --with zstandard` (not a dependency yet).
+- Build: gates ortho 1,242 (rus->ukr 326), lex 744; rus train 115,707
+  (41,582 short); epochs 90-91 s; quant gate 0.9778 -> 0.9783; theta 0.67
+  by F1 (0.828 by quantile). One dense run per row, common test file:
+
+  | | test | <=20 | rus | ukr | ukr<=20 | others->rus<=20 | rst | okru | cosmus v2 | short | tatoeba | lit |
+  |---|---|---|---|---|---|---|---|---|---|---|---|---|
+  | v14 (Hub) | 98.74 | 94.79 | 96.42 | 96.08 | 92.40 | 0.85 | 96.78 | 88.10 | 99.52* | 94.77 | 99.03 | 98.95 |
+  | v15 | 98.76 | 95.00 | 96.56 | 97.10 | 94.49 | 0.64 | 96.55 | 88.12 | 99.63* | 97.04 | 99.00 | 98.80 |
+  | v16 | 98.79 | 95.37 | 96.76 | 98.56 | 97.63 | 0.25 | 96.55 | 93.20 | 99.15 | 95.82 | 99.08 | 98.40 |
+
+  \* trained on most of these rows. lit -0.40 is 8 rows of 2,000 on a
+  single dense run (the first v16 build scored 98.65, its sparse seeds
+  99.05-99.15).

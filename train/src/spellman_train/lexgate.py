@@ -140,6 +140,14 @@ def contradicting_lexicon(lang: str, text: str, threshold: float) -> str | None:
     return best
 
 
+def own_margin(lang: str, text: str) -> float:
+    """How strongly ``text``'s words are ``lang``'s own: nats against the
+    closest twin (negative when a twin fits better; 0.0 when ``lang`` has no
+    lexicon or the row has no known word)."""
+    lexes = load_lexicons().get(lang, ())
+    return min((-score(text, lex) for _, lex in lexes), default=0.0)
+
+
 def _manifest_texts(manifest: Path, indices: list[int], lang: str) -> list[str]:
     import polars as pl
 
