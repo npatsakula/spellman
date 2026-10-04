@@ -429,3 +429,37 @@ per side). On the v15 recipe at 4 nats: **dropped 11,998 rows — rus->ukr
   Ukrainian +1.3 (short +2.6), drift to rus halved, overall +0.04; Russian
   short recall falls (-3.7 on test, rst -0.45): the gate removed 10k of
   Russian's 37k short train rows and nothing replaced them.
+
+## Short-Russian replacement lanes (2026-10-04, branch exp/rus-coverage)
+
+`exp/rus_coverage/export_short_rus.py` + `mix_short_rus.py`: the noisy
+`ukr_tweets … twitter_lang=ru` lane leaves the recipe; in its slot go its
+2,808 clearly Russian rows (lexical score <= -3) and N rows from each of
+three open chat/forum pools (3-19 chars, filtered, deduped; pools under
+`cache/short-rus/`): `Den4ikAI/russian_dialogues` (279,542 kept),
+`hausmer/dvach_chat` (154,200), `nyuuzyou/ruforum` first 1.5M docs
+(69,963). Lexical gate at 4. Rus train rows: v15 113k (37k short), gate
+only 101k (27k), N=12k 119k (42k), N=25k 161k (76k).
+
+Sparse, s1 / s2. `test` = the lexically gated test split minus 1,930 rus
+rows of the removed lane with undecidable labels (715,359 rows; identical
+for every model). `okru` = 5,000 short ok.ru comments, in no mix.
+
+| | test | <=20 | rus | ukr | ukr<=20 | others->rus<=20 | rst | okru | tatoeba |
+|---|---|---|---|---|---|---|---|---|---|
+| v15 mix | 98.70 / 98.68 | 94.78 / 94.61 | 96.81 / 96.69 | 97.07 / 96.74 | 94.52 / 93.91 | 0.61 / 0.68 | 97.58 / 97.43 | 90.16 / 90.32 | 98.90 / 98.93 |
+| + gate | 98.74 / 98.74 | 95.11 / 95.17 | 96.92 / 96.73 | 98.21 / 98.21 | 96.89 / 96.85 | 0.33 / 0.33 | 97.01 / 97.08 | 89.94 / 89.38 | 98.99 / 98.99 |
+| + gate + 12k/pool | 98.76 / 98.77 | 95.51 / 96.00 | 96.88 / 97.19 | 98.70 / 98.56 | 97.99 / 97.74 | 0.21 / 0.25 | 96.74 / 97.31 | 93.88 / 94.98 | 98.97 / 98.97 |
+| + gate + 25k/pool | 98.72 / 98.74 | 95.12 / 95.42 | 97.20 / 97.38 | 98.50 / 98.45 | 97.63 / 97.55 | 0.29 / 0.30 | 97.35 / 97.51 | 95.80 / 96.10 | 98.91 / 98.90 |
+
+- 12k/pool is the best row: test +0.07, <=20 +1.1, ukr +1.7 (short +3.6),
+  out-of-source short Russian +4.2, drift to rus on short rows cut to a
+  third. rst is within seed spread of the baseline on one seed and -0.8 on
+  the other. 25k/pool buys +1.5 more on okru and gives back <=20 and
+  bul/mkd/uzn drift.
+- tatoeba others->rus <=20 rises 0.5 -> 0.67 with either size (2-3 rows
+  per 1,000).
+- **short_eval's Russian rows are not a referee**: 42 of 49 are rows of
+  the removed lane (so in train before), mostly transliteration jokes
+  ("ви нид ту гоу зэр", "пээмэска", "Ъеъ"); its rus accuracy falls
+  80 -> 72 once they leave train.
