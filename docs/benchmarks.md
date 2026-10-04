@@ -132,17 +132,9 @@ eng/mkd 0.98; rus-attraction on short low-resource texts).
 
 ## Throughput
 
-svod JIT plans, BEAM=16, k=1024 (top rung), batch 512, Tatoeba eval —
-37,051 documents:
-
-| hardware | model | bulk | single document |
-|---|---|---|---|
-| AMD Ryzen 9 7950X3D | v14 (2^18) | 1.9 µs/sample (~525k docs/s) | 4.3 µs/doc |
-| AMD AI 395 Max (before the batch/K rework) | v12 (2^17) | 1.2 µs/sample (~830k docs/s) | 13.0 µs/doc |
-
 On the Apple M4 Max (int8 with per-column scales, the runtime's only
 store — see the design doc): `lid-bench` against
-`train/tatoeba_eval.tsv` and the 368,507-row held-out mix
+`train/tatoeba_eval.tsv` and the 368,507-row v12-era held-out mix
 (`model/eval_test.tsv`), BEAM=16, timed threads on performance cores;
 ranges over two runs. The one-thread and replica rows run with
 `SVOD_THREADS=1` (BEAM tunes those plans for one thread), the
@@ -168,7 +160,38 @@ inline kernel pays no launch cost. The one-thread rows are the
 like-for-like comparison with whichlang and lingua, which `lid-bench`
 runs on one thread.
 
-Same box, same settings, other inputs: the 719k-row held-out test split
+**x86 and GPUs** (0.1.0-alpha.7, int8-col, BEAM=16, k=1024, batch
+4096): `lid-bench --rows-per-lang 0` over v14's own 719k-row test split
+plus Tatoeba, 756,306 rows in one pass — a different mix from the M4
+table above, which scored the older v12-era held-out file (368,507 rows;
+753 of them are in v14's training data), so compare within a column, not
+across tables. The CPU
+column is the `SVOD_THREADS=1` run except the svod-threaded row, which
+comes from a run without it; GPU columns set `SVOD_DEVICE`. µs per
+document:
+
+| run | 7950X3D (16C/32T) | AI Max+ 395 CPU (16C/32T) | Radeon 8060S iGPU (`AMD:0`) | RTX 3060 (`CUDA:0`) |
+|---|---|---|---|---|
+| spellman bulk, one thread | 4.53–4.63 | 5.17 | 3.00 | 14.01 |
+| spellman single document, one thread | 4.67–4.74 | 11.57 | 20.74 | 34.32 |
+| spellman, one replica per thread (32) | 0.74–0.75 | 0.44 | 0.47 | 6.18 |
+| spellman bulk, svod-threaded kernel | 4.97 | — | 1.54 | 16.72 |
+| whichlang 0.1, one thread | 0.97–0.99 | 0.95 | | |
+| whichlang 0.1, 32 threads | 0.07 | 0.07 | | |
+| lingua 1.8 high accuracy, one thread | 193–200 | 194 | | |
+
+Accuracy is identical on every device (98.64% over the mix). On x86 the
+svod-threaded CPU kernel is no faster than one thread (7950X3D 4.97 vs
+4.53 µs), unlike on the M4, so replicas are the only multi-core setup
+worth using there; the AI Max+ 395's threaded CPU row is left out
+because that run's thread setting is not on record. On the GPUs only
+the kernel moves: featurization stays on the CPU. The 8060S shares
+memory with the CPU and halves the one-thread time; the RTX 3060 is slower
+than its own CPU on every row — most likely because the kernel reads the
+host-mapped input over PCIe (not yet profiled).
+
+Earlier 7950X3D measurements (v14 on svod alpha.5, threaded bulk, batch
+512), other inputs: the 719k-row held-out test split
 (longer, mixed-register texts) runs at 2.9 µs/sample and a 1M-row file
 of single words at 0.8 µs/sample — the per-call plan ladder scores short
 rows on a K=64 plan instead of padding them to 1024. The `detect_md`
