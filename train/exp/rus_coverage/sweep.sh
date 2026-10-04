@@ -4,7 +4,7 @@
 # usage: sweep.sh ARM[:extra train flags] ...   (ARM = mix dir under data/)
 set -uo pipefail
 cd "$(dirname "$0")/../.."
-REFS="model-v15/eval_test.tsv tatoeba_eval.tsv rusentitweet_eval_v2.tsv cosmus_rus_eval.tsv short_eval.tsv lit_rus_eval.tsv"
+REFS="${REFS:-model-v15/eval_test.tsv tatoeba_eval.tsv rusentitweet_eval_v2.tsv cosmus_rus_eval.tsv short_eval.tsv lit_rus_eval.tsv}"
 mkdir -p data/exp data/logs
 for spec in "$@"; do
   arm="${spec%%:*}"; extra=""; name="$arm"
