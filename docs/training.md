@@ -197,6 +197,24 @@ uv run spellman-train clean cache/<name>-*.jsonl [--conf 0.995] [--script] [--dr
 per-cache work is single-threaded numpy, so a 32-core box finishes the
 ~100-cache pass in minutes instead of half an hour).
 
+**Orthographic gate** (`mix --ortho-gate 0.5`): twin protection leaves
+the close groups to spelling. Each twin has letters the other never
+writes (і ї є ґ vs ы э ё ъ), so the mixer estimates, per row, how much
+of the text reads as each language from those letters and their typical
+rates (`ortho.py`), and drops a row when the rival's share ≥ 0.5 and the
+label's own share < 0.5. Presence alone never fires it: a long Russian
+document quoting a Ukrainian sentence stays; a Ukrainian tweet that
+Twitter's `lang=ru` tag delivered as Russian goes. Only real words count
+(mentions, URLs, emails and numbers are skipped, hashtags lose their
+`#`, as in the featurizer), and Turkic variant spellings fold first
+(ҥ→ң, ђ→ҕ: Sakha typed with ң, Tuvan with ҥ). On the v13f mix it drops
+8,050 of 2.52M train rows, 7,465 of them Ukrainian labelled `rus`
+(6.2% of rus train), and matches the 693 such rows in test; against a
+200-row hand audit of model errors it removed 0 of 54 correctly
+labelled fixable rows. It runs at mix time over every source and split,
+so it also cleans val/test: compare models before and after on the same
+gated test split.
+
 Rerun after any cache rebuild — a rebuild re-downloads the dirty
 upstream data. The short-text lane (3–19 char rows, under the token
 guard) gets `short-verify` instead: 3-judge consensus (spellman, GlotLID,
@@ -225,7 +243,10 @@ uv run spellman-train train --data data_mix --out ../model \
 Flags: `--log2-d` (bucket count D = 2^log2_d), `--hash-id
 {fmix32,murmur2,multiply_shift}`, `--seed`, `--dim`, `--epochs`,
 `--batch-size` (256), `--k` (tokens per training sample, 256), `--lr`,
-`--per-lang-cap` (50k train-side rebalance), `--hash-stats`, `--device`.
+`--per-lang-cap` (50k train-side rebalance), `--hash-stats`, `--device`,
+`--dense`, `--[no-]compile` (on), `--train-seed` (data order and head
+init; vary it, not the hash `--seed`, for replicates), `--head
+{linear,mlp}` (mlp is an experiment that cannot fold into `P`).
 `--data` reads parquet shards when present, else legacy `{split}.jsonl`.
 
 Details that matter:
@@ -236,6 +257,20 @@ Details that matter:
   space by construction.
 - AdamW with linear LR decay to zero across all epochs (fastText
   schedule). Embeddings zero-initialized (see design doc).
+- **Throughput** (full v14 budget, one epoch, M4 Max MPS): 140 s before
+  the rework → 81 s with `--dense` → 37 s with the default row-sparse
+  embedding updates. Rows are stored ragged (no padding to k: v14 rows
+  average ~283 of 512 tokens), pooled with `embedding_bag`, prepared on a
+  `torchdata.nodes` thread pipeline (the batch's distinct rows via a
+  bincount), copied to the device without blocking, and the whole forward
+  is `torch.compile`d with dynamic shapes.
+- **Sparse vs dense:** the default `LazyAdamW` updates only the rows a
+  batch touches; weight decay of untouched rows stays exact (caught up
+  from a prefix sum over the known LR schedule), but it drops dense
+  AdamW's momentum drift on untouched rows. On the v13f test split it
+  scored ~0.03pp below dense (linear 98.634/98.622 over two seeds vs
+  98.662; mlp 98.689/98.690 vs 98.709 — one dense run each), so release
+  recipes train with `--dense`; the sparse default is for experiments.
 - **θ calibration:** θ = 5th percentile of validation confidence; the
   runtime flags detections below it as uncertain.
 - **Hash A/B:** rerun with different `--hash-id` and compare val

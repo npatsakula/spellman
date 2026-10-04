@@ -34,6 +34,7 @@ import polars as pl
 from safetensors.numpy import load_file
 
 from spellman_train.features import LANGUAGES, bucket_tokens_flat
+from spellman_train.ortho import TWIN_GROUPS
 from spellman_train.paths import CACHE_DIR, MODEL_DIR
 
 MIN_TOKENS = 8  # ultra-short rows carry too little signal to judge by
@@ -46,13 +47,8 @@ LID176_TO_OURS = {"en": "eng", "es": "spa", "fr": "fra", "pt": "por", "de": "deu
 # tat split into genuine Tatar contamination — җ is Tatar-only — and genuine
 # Bashkir the model misjudges — ҡ is Bashkir-only). Dropping the latter
 # would remove exactly the hard boundary examples training needs, so
-# within-group predictions are never dropped.
-TWIN_GROUPS = [
-    {"tat", "bak", "kaz", "kir", "tyv", "chv", "sah"},  # Turkic
-    {"udm", "mhr", "kpv"},                              # Permic
-    {"bul", "mkd", "srp"},                              # Balkan Slavic
-    {"rus", "ukr", "bel"},                              # East Slavic
-]
+# within-group predictions are never dropped. Spelling arbitrates there
+# instead: `spellman-train mix --ortho-gate` (see ortho.py).
 
 def _twin_protected(gold: str, pred: str) -> bool:
     return any(gold in g and pred in g for g in TWIN_GROUPS)
