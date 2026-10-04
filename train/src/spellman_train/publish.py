@@ -65,6 +65,14 @@ LICENSES: dict[str, str] = {
     "DGurgurov/macedonian_sa": "MIT",
     "DGurgurov/bulgarian_sa": "MIT",
     "YShynkarov/COSMUS": "MIT",
+    # Short colloquial Russian (v16): chat and forum dumps, rows of 3-19
+    # characters. Licenses are the uploaders' labels on scraped user text.
+    "Den4ikAI/russian_dialogues": "MIT",
+    "nyuuzyou/ruforum": "CC0-1.0",
+    "hausmer/dvach_chat": (
+        "other (uploader's label) — a member's export of the Dvach Telegram "
+        "group chat; message text only, author names not included"
+    ),
     "cardiffnlp/tweet_sentiment_multilingual": "unstated on card",
     "contemmcm/sentiment140": "unstated on card",
     "FrancophonIA/french_tweets": "unstated on card",
@@ -163,6 +171,22 @@ def dataset_card(manifest: dict, shards: dict[str, list[Path]], sizes: dict[str,
         f" | {_license_of(name, dict(opts)) or 'unstated'} |"
         for name, opts in manifest["sources"]
     )
+    hygiene = ""
+    if manifest.get("ortho_gate"):
+        hygiene += (
+            f"- orthographic twin gate `{manifest['ortho_gate']}`: rows whose spelling is mostly a "
+            "twin language of their label are dropped (e.g. Ukrainian tweets tagged `ru`)\n"
+        )
+    if manifest.get("lex_gate"):
+        hygiene += (
+            f"- lexical twin gate `{manifest['lex_gate']}` nats: rows whose words are a twin "
+            "language's are dropped (short Ukrainian with no Ukrainian-only letter)\n"
+        )
+    if manifest.get("holdout"):
+        hygiene += (
+            "- referee holdout: rows whose text appears in an evaluation referee "
+            f"({', '.join('`' + Path(p).name + '`' for p in manifest['holdout'])}) are in no split\n"
+        )
     return f"""---
 language:
 {langs}
@@ -212,7 +236,7 @@ Recipe (also recorded, byte-exact, in `manifest.json`):
 - seed `{manifest.get('seed')}`, `cap_per_lang={manifest.get('cap_per_lang')}`
 - augmentation: wild `{manifest.get('wild_augment')}`, short `{manifest.get('short_augment')}` (train/val only; test pristine)
 - short floor `{manifest.get('short_floor')}`
-
+{hygiene}
 Sources in mix order (dedup is first-source-wins):
 
 | source | options |

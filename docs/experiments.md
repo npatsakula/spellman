@@ -358,3 +358,163 @@ held-out file + the five frozen referees):
   deltas of the winning row vs plain d18 are within seed spread — the
   durable wins of the whole campaign are short (+0.7–1.2) and held-out
   (+0.07 stable across seeds).
+
+## v15 build + the Russian-coverage sweep (2026-10-03, branch exp/rus-coverage)
+
+Scripts: `train/exp/rus_coverage/`. All arms scored through the Rust
+runtime on v15's gated test split (718,479 rows) and the referees.
+
+- **v15 built** (`recipes/v15.sh`, dense, torch 2.13.0+cu130 — the box's
+  lock, not 2.14.1): 0/99 cold caches; gate dropped 8,053 rows (rus->ukr
+  7,132); epochs 90-92 s; quant gate 0.9769 -> 0.9775; theta 0.819
+  (5th-percentile, not yet F1-recalibrated). v14 -> v15 on the gated
+  split: 98.66 -> 98.69, <=20 94.12 -> 94.38, rus 91.90 -> 92.31, ukr
+  95.81 -> 96.87; rst 96.78 -> 96.55, cosmus 97.36 -> 97.93, short 94.77
+  -> 97.04, tatoeba 99.03 -> 99.00.
+- **The gate leaves short Ukrainian behind**: 400 of v15's 754 rus test
+  errors are predicted ukr, 379 of them <=20 chars, 3 with any of і ї є ґ;
+  ~70 of an 80-row sample read as Ukrainian. Rus test accuracy is
+  therefore a noisy metric; rusentitweet/COSMUS are the cleaner ones.
+- **Unseen words: narrow effect.** Rows whose words are *all* absent from
+  train fail 4-10x more often (rus test minus rus->ukr rows: 13.9% vs
+  3.75%; rst 20.4% vs 3.1%) but are ~5% of rows and hold ~1/5-1/4 of the
+  errors; rows with *some* unseen words fail no more often above 20
+  chars. Ukrainian shows the same shape.
+- **The uniform cap does not bind for rus**: 113,250 train rows in v15.
+  `--cap-override` alone is a no-op; arms add FineWeb-2 rus sentences
+  (pool of 1.5M, ~186 MB streamed), hygiene-cleaned.
+- **Sweep (sparse trainer, 2 train seeds per arm; s1 / s2):**
+
+  | arm (rus train rows) | test | rus | rst | cosmus | tatoeba | others->rus |
+  |---|---|---|---|---|---|---|
+  | v15 base (113k) | 98.63 / 98.61 | 92.83 / 93.27 | 97.58 / 97.43 | 97.72 / 97.61 | 98.90 / 98.93 | 0.30 / 0.31 |
+  | random +70k (195k) | 98.61 / 98.60 | 93.58 / 93.65 | 97.74 / 97.89 | 97.72 / 97.65 | 98.87 / 98.90 | 0.37 / 0.37 |
+  | diverse 80k (194k) | 98.60 / 98.60 | 93.75 / 93.92 | 97.89 / 98.12 | 97.72 / 97.79 | 98.87 / 98.82 | 0.42 / 0.40 |
+  | random +100k (228k) | 98.59 / 98.60 | 94.27 / 94.12 | 98.23 / 98.12 | 97.86 / 97.83 | 98.83 / 98.82 | 0.41 / 0.40 |
+  | random +300k (458k) | 98.54 / 98.57 | 94.19 / 94.17 | 98.35 / 98.04 | 98.04 / 98.08 | 98.73 / 98.77 | 0.48 / 0.47 |
+  | base + lexical dropout 0.3 | 98.62 / 98.65 | 92.79 / 92.94 | 97.35 / 97.47 | 97.26 / 97.58 | 98.92 / 98.91 | 0.30 / 0.31 |
+  | 228k + lexical dropout 0.3 | 98.58 / 98.61 | 94.63 / 93.34 | 98.16 / 97.74 | 98.04 / 97.65 | 98.81 / 98.83 | 0.42 / 0.39 |
+
+  More Russian helps Russian (+1.1 test, +0.7 rst at 228k) and saturates
+  there; overall test never improves and tatoeba and the others' drift to
+  rus worsen monotonically with Russian's share. Diverse selection beats
+  random at equal size by ~0.2 on rus/rst, within reach of seed spread.
+  Lexical dropout does nothing for Russian (test <=20 +0.2 overall).
+- **Bias correction rejected** (`bias_sweep.py`, float model.pt): the
+  rus-logit shift that returns the 228k arm's drift to baseline (0.5-0.75)
+  drops rus to 90-91%, below the baseline's 93.1.
+
+## Lexical twin gate (2026-10-03, branch exp/rus-coverage)
+
+`mix --lex-gate NATS` (`lexgate.py`, lexicon `seeds/lexgate/rus-ukr.tsv.gz`:
+314k words, log-odds measured on trusted lanes + 1.5M FineWeb-2 sentences
+per side). On the v15 recipe at 4 nats: **dropped 11,998 rows — rus->ukr
+11,353, ukr->rus 645**, after the ortho gate's 8,053.
+
+- All 11,353 come from one lane, `ukr_tweets` read with `twitter_lang=ru`
+  (40,941 rows): ortho drops 7,147, the lexical gate another 11,353, and
+  the remainder is still mostly not Russian (10.7% score 1-3 towards ukr,
+  29.6% carry no lexicon word, 19% lean rus). Hand audit of ~250 sampled
+  rows: drops at >=3 nats read Ukrainian throughout.
+- It also finds label noise in the referees' sources: 95 of COSMUS's 2,808
+  "russian" rows are Ukrainian, and **2,172 of the 2,808 COSMUS referee
+  rows sit in the train split** (lane 61) — COSMUS is no longer held out.
+- Sparse, 2 seeds each, on the lexically gated test split (717,289 rows):
+
+  | | test | <=20 | rus | rus<=20 | ukr | ukr<=20 | others<=20 | others->rus<=20 | rst |
+  |---|---|---|---|---|---|---|---|---|---|
+  | v15 mix | 98.67 / 98.65 | 94.54 / 94.39 | 94.77 / 94.74 | 88.42 / 88.59 | 97.07 / 96.74 | 94.52 / 93.91 | 94.80 / 94.64 | 0.61 / 0.68 | 97.58 / 97.43 |
+  | + lex gate 4 | 98.70 / 98.70 | 94.72 / 94.75 | 93.90 / 93.60 | 85.05 / 84.46 | 98.21 / 98.21 | 96.89 / 96.85 | 95.13 / 95.19 | 0.33 / 0.33 | 97.01 / 97.08 |
+
+  Ukrainian +1.3 (short +2.6), drift to rus halved, overall +0.04; Russian
+  short recall falls (-3.7 on test, rst -0.45): the gate removed 10k of
+  Russian's 37k short train rows and nothing replaced them.
+
+## Short-Russian replacement lanes (2026-10-04, branch exp/rus-coverage)
+
+`exp/rus_coverage/export_short_rus.py` + `mix_short_rus.py`: the noisy
+`ukr_tweets … twitter_lang=ru` lane leaves the recipe; in its slot go its
+2,808 clearly Russian rows (lexical score <= -3) and N rows from each of
+three open chat/forum pools (3-19 chars, filtered, deduped; pools under
+`cache/short-rus/`): `Den4ikAI/russian_dialogues` (279,542 kept),
+`hausmer/dvach_chat` (154,200), `nyuuzyou/ruforum` first 1.5M docs
+(69,963). Lexical gate at 4. Rus train rows: v15 113k (37k short), gate
+only 101k (27k), N=12k 119k (42k), N=25k 161k (76k).
+
+Sparse, s1 / s2. `test` = the lexically gated test split minus 1,930 rus
+rows of the removed lane with undecidable labels (715,359 rows; identical
+for every model). `okru` = 5,000 short ok.ru comments, in no mix.
+
+| | test | <=20 | rus | ukr | ukr<=20 | others->rus<=20 | rst | okru | tatoeba |
+|---|---|---|---|---|---|---|---|---|---|
+| v15 mix | 98.70 / 98.68 | 94.78 / 94.61 | 96.81 / 96.69 | 97.07 / 96.74 | 94.52 / 93.91 | 0.61 / 0.68 | 97.58 / 97.43 | 90.16 / 90.32 | 98.90 / 98.93 |
+| + gate | 98.74 / 98.74 | 95.11 / 95.17 | 96.92 / 96.73 | 98.21 / 98.21 | 96.89 / 96.85 | 0.33 / 0.33 | 97.01 / 97.08 | 89.94 / 89.38 | 98.99 / 98.99 |
+| + gate + 12k/pool | 98.76 / 98.77 | 95.51 / 96.00 | 96.88 / 97.19 | 98.70 / 98.56 | 97.99 / 97.74 | 0.21 / 0.25 | 96.74 / 97.31 | 93.88 / 94.98 | 98.97 / 98.97 |
+| + gate + 25k/pool | 98.72 / 98.74 | 95.12 / 95.42 | 97.20 / 97.38 | 98.50 / 98.45 | 97.63 / 97.55 | 0.29 / 0.30 | 97.35 / 97.51 | 95.80 / 96.10 | 98.91 / 98.90 |
+
+- 12k/pool is the best row: test +0.07, <=20 +1.1, ukr +1.7 (short +3.6),
+  out-of-source short Russian +4.2, drift to rus on short rows cut to a
+  third. rst is within seed spread of the baseline on one seed and -0.8 on
+  the other. 25k/pool buys +1.5 more on okru and gives back <=20 and
+  bul/mkd/uzn drift.
+- tatoeba others->rus <=20 rises 0.5 -> 0.67 with either size (2-3 rows
+  per 1,000).
+- **short_eval's Russian rows are not a referee**: 42 of 49 are rows of
+  the removed lane (so in train before), mostly transliteration jokes
+  ("ви нид ту гоу зэр", "пээмэска", "Ъеъ"); its rus accuracy falls
+  80 -> 72 once they leave train.
+
+## v16 candidate — dense build (2026-10-04, branch exp/rus-coverage)
+
+`recipes/v16.sh` = the 12k/pool replacement mix (`data/v16`, train split
+byte-identical to the sweep's) + v15's dense training. Epochs 91 s each;
+quant gate 0.9776 -> 0.9782; theta 0.828 by quantile, **0.66 by
+error-detection F1** (`exp/rus_coverage/theta_f1.py`: val F1 0.536 vs
+0.485, flags 2.67% vs 4.81%), written to model.json. NOT published.
+
+Same common test file as above; one dense run per model, three sparse
+seeds per mix.
+
+| | test | <=20 | rus | ukr | ukr<=20 | others->rus<=20 | rst | okru | short | tatoeba | lit |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| v14 (Hub) | 98.74 | 94.79 | 96.42 | 96.08 | 92.40 | 0.85 | 96.78 | 88.10 | 94.77 | 99.03 | 98.95 |
+| v15 dense | 98.76 | 95.00 | 96.56 | 97.10 | 94.49 | 0.64 | 96.55 | 88.12 | 97.04 | 99.00 | 98.80 |
+| v16 dense | 98.79 | 95.36 | 96.88 | 98.49 | 97.52 | 0.26 | 96.70 | 93.76 | 96.17 | 99.04 | 98.65 |
+| v15 mix sparse s1/s2/s3 | 98.70 / 98.68 / 98.72 | 94.78 / 94.61 / 95.03 | 96.81 / 96.69 / 96.35 | 97.07 / 96.74 / 96.99 | 94.52 / 93.91 / 94.38 | 0.61 / 0.68 / 0.59 | 97.58 / 97.43 / 97.35 | 90.16 / 90.32 / 89.68 | 98.26 / 98.08 / 98.61 | 98.90 / 98.93 / 98.96 | 98.95 / 99.05 / 98.95 |
+| v16 mix sparse s1/s2/s3 | 98.76 / 98.77 / 98.75 | 95.51 / 96.00 / 95.56 | 96.88 / 97.19 / 96.86 | 98.70 / 98.56 / 98.59 | 97.99 / 97.74 / 97.79 | 0.21 / 0.25 / 0.23 | 96.74 / 97.31 / 97.01 | 93.88 / 94.98 / 94.66 | 97.74 / 97.21 / 97.39 | 98.97 / 98.97 / 98.97 | 99.05 / 99.15 / 99.15 |
+
+rst: sparse v16 is 0.4 below sparse v15 on the 3-seed mean (97.02 vs
+97.45); the dense pair goes the other way (+0.15). Dense per-language
+moves >= 0.15: ukr +1.39, rus +0.32, srp +0.17, mkd -0.27, bak -0.21,
+che -0.17. short_eval's drop is its 42 formerly-in-train rus rows.
+
+## v16 final build — referees held out, HF lanes (2026-10-04)
+
+- **COSMUS fixed.** The COSMUS Russian lane *was* the referee (2,172 of
+  2,808 rows in v15's train split, the rest in val/test). `recipes/v16.sh`
+  retires the lane (`mix --drop-source`) and `mix --holdout FILE.tsv` keeps
+  every referee row out of all splits (141 rows dropped: chv 47, ukr 42,
+  rus 19, …). `cosmus_rus_eval_v2.tsv` = the referee minus its 95
+  Ukrainian rows (lexical gate >= 4; all 45 lowest-scoring ones read
+  Ukrainian) — 2,713 rows. **COSMUS numbers before v16 are not held-out.**
+- **The short-Russian pools are plain `hf:` lanes now** (`drop_long=True`
+  drops instead of truncating, `sample=N` takes a seeded random N of the
+  distinct passing rows) and the tweet lane keeps its Russian rows by
+  `lex_own=3` (3,108 rows) — so `spellman-train fetch --manifest
+  data/v16/manifest.json` builds everything; no pre-export. New adapter
+  options are `late_options`: out of the cache fingerprint at their
+  default, so the 97 existing caches stayed warm (5/102 cold = the new
+  lanes). ruforum needs `uv run --with zstandard` (not a dependency yet).
+- Build: gates ortho 1,242 (rus->ukr 326), lex 744; rus train 115,707
+  (41,582 short); epochs 90-91 s; quant gate 0.9778 -> 0.9783; theta 0.67
+  by F1 (0.828 by quantile). One dense run per row, common test file:
+
+  | | test | <=20 | rus | ukr | ukr<=20 | others->rus<=20 | rst | okru | cosmus v2 | short | tatoeba | lit |
+  |---|---|---|---|---|---|---|---|---|---|---|---|---|
+  | v14 (Hub) | 98.74 | 94.79 | 96.42 | 96.08 | 92.40 | 0.85 | 96.78 | 88.10 | 99.52* | 94.77 | 99.03 | 98.95 |
+  | v15 | 98.76 | 95.00 | 96.56 | 97.10 | 94.49 | 0.64 | 96.55 | 88.12 | 99.63* | 97.04 | 99.00 | 98.80 |
+  | v16 | 98.79 | 95.37 | 96.76 | 98.56 | 97.63 | 0.25 | 96.55 | 93.20 | 99.15 | 95.82 | 99.08 | 98.40 |
+
+  \* trained on most of these rows. lit -0.40 is 8 rows of 2,000 on a
+  single dense run (the first v16 build scored 98.65, its sparse seeds
+  99.05-99.15).

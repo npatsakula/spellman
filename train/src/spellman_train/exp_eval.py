@@ -21,7 +21,7 @@ from spellman_train.features import LANGUAGES, bucket_tokens_flat
 from spellman_train.paths import TRAIN_DIR
 from spellman_train.train import LANG_TO_IDX, SpellmanNet, load_split
 
-REFEREES = ["tatoeba_eval.tsv", "rusentitweet_eval_v2.tsv", "cosmus_rus_eval.tsv", "short_eval.tsv"]
+REFEREES = ["tatoeba_eval.tsv", "rusentitweet_eval_v2.tsv", "cosmus_rus_eval_v2.tsv", "short_eval.tsv"]
 GROUPS = {
     "east_slavic": ["rus", "ukr", "bel"],
     "south_slavic": ["bul", "mkd", "srp"],

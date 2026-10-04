@@ -73,18 +73,19 @@ score F1 0.99–1.00 rather than being absent or noise.
 ## Accuracy
 
 Highlights against the strongest available baselines, on identical eval
-rows (v14 model; every number and the methodology in
+rows (v16 model; every number and the methodology in
 [docs/benchmarks.md](docs/benchmarks.md)):
 
 | eval | spellman | GlotLID v3 | fastText lid.176 | lingua (high) |
 |---|---|---|---|---|
-| Tatoeba, clean out-of-domain sentences | 99.0% | **99.3%** | 94.9% | 97.7%¹ |
-| wild Russian tweets | **96.9%** | 82.7% | 90.4% | — |
-| real short utterances (≤19 chars) | **95.0%** | 71.3% | 84.3% | — |
-| single words (the hardest rung) | **72.1%** | 43.9% | 59.0% | — |
-| held-out mix, 719k rows of all registers | **98.6%** | 92.6% | 81.5% | 90.3%¹ |
+| Tatoeba, clean out-of-domain sentences | 99.1% | **99.3%** | 94.9% | 97.7%¹ |
+| wild Russian tweets | **96.6%** | 82.7% | 90.4% | — |
+| real short utterances (≤19 chars) | **95.8%** | 71.3% | 84.3% | — |
+| single words (the hardest rung) | **72.0%** | 43.9% | 59.0% | — |
+| held-out mix, 719k rows of all registers | **98.7%** | 92.9% | 82.0% | 90.3%¹² |
 
 ¹ on the subset of our languages lingua supports (17/30).
+² lingua was last measured on the v14 test split (719,255 rows).
 
 The pattern: on clean long text every good detector works, and GlotLID's
 enormous training set keeps a 0.2pp lead on Tatoeba. Everywhere else —

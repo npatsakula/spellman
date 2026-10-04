@@ -1,23 +1,36 @@
 # Benchmarks
 
-The full comparison record for the shipped model (v14, 2026-08-31).
+The full comparison record for the shipped model. The first table is
+v16 (2026-10-04) on its own test split; the Rust-crate, per-language and
+throughput sections below it were measured on v14 (2026-08-31) and its
+719,255-row split, and say so.
 Everything here is measured on identical eval rows per table; the
 summary lives in the [README](../README.md#accuracy). Referee files are
-frozen (never trained on); the held-out file is the mix's own
-content-addressed test split (719,255 rows). Numbers marked v12-era were
+frozen and, since v16, held out of the mix by construction
+(`mix --holdout`); the held-out file is the mix's own content-addressed
+test split (718,647 rows). Numbers marked v12-era were
 measured on hardware we no longer have access to.
 
 ## Against fastText-family models (GlotLID v3, lid.176)
 
 | eval | rung | spellman | GlotLID v3 | fastText lid.176 |
 |---|---|---|---|---|
-| held-out mix (719,255, pristine test) | text | **98.62%** | 92.57%‡ | 81.54%* |
-| Tatoeba (37,051, out-of-domain) | word / pair / triple | **72.06 / 89.60 / 95.21** | 43.9 / 79.3 / 91.9‡ | 59.0 / 79.0 / 87.9 |
-| Tatoeba (37,051, out-of-domain) | text | 99.01% | **99.25%**‡ | 94.90%* |
-| rusentitweet (2,606 wild Russian tweets, label-audited) | text | **96.89%**† | 82.73%‡ | 90.41% |
-| COSMUS Russian (2,808 wild Telegram/reviews, gold-labeled) | text | **97.40%** | 95.69%‡ | 96.65% |
-| short utterances (574, orthography-certified ≤19 chars) | text | **94.95%**† | 71.25%‡ | 84.32% |
-| literary Russian (2,000 classic-prose sentences, held-out novel) | text | 98.90% | — | — |
+| held-out mix (718,647, pristine test) | text | **98.74%** | 92.92%‡ | 81.97%* |
+| Tatoeba (37,051, out-of-domain) | word / pair / triple | **72.04 / 89.78 / 95.37** | 43.9 / 79.3 / 91.9‡ | 59.0 / 79.0 / 87.9 |
+| Tatoeba (37,051, out-of-domain) | text | 99.08% | **99.25%**‡ | 94.90%* |
+| rusentitweet (2,606 wild Russian tweets, label-audited) | text | **96.55%**† | 82.73%‡ | 90.41% |
+| COSMUS Russian v2 (2,713 wild Telegram/reviews, gold-labeled)§ | text | 99.15% | 98.82%‡ | **99.37%** |
+| short utterances (574, orthography-certified ≤19 chars) | text | **95.82%**† | 71.25%‡ | 84.32% |
+| literary Russian (2,000 classic-prose sentences, held-out novel) | text | 98.40% | — | — |
+
+§ `cosmus_rus_eval_v2.tsv`: the 2,808-row file minus 95 rows that are
+Ukrainian under a "russian" manual label (found by the lexical twin
+gate, read by hand). Before v16 the COSMUS Russian slice was also a
+training lane — 2,172 of the 2,808 rows sat in v15's train split — so
+earlier COSMUS numbers (v14: 97.40%) were not held-out and are not
+comparable. Of the 49 Russian rows of the short-utterance referee, 42
+came from a tweet lane v16 retired (transliteration jokes such as
+"ви нид ту гоу зэр"); they were in training up to v15.
 
 \* fastText scored on the subset of languages its label set supports
 (24/30; no kpv/udm labels, and its `uz` is Latin-script Uzbek — it scores
@@ -44,12 +57,12 @@ the open-LID SOTA fastText model (2,102 labels, 1.7 GB), scored with
 script-variant labels mapped to our classes (`tat_Latn` → tat — the
 courtesy goes to the baseline) and full coverage of the evals' languages
 (ara/cmn are absent from its label set; neither appears in these files).
-By length, held-out same-split: GlotLID 59.7 / 90.1 / 96.5 vs spellman
-89.6 / 97.5 / 99.0 (≤20 / 21–100 / >100 — spellman leads every bucket,
+By length, held-out same-split: GlotLID 65.2 / 92.1 / 97.8 vs spellman
+95.1 / 98.5 / 99.5 (≤20 / 21–100 / >100 — spellman leads every bucket,
 by ~30pp on ≤20-char rows); Tatoeba 97.8 / 99.3 / 100.0 (GlotLID leads
 every bucket). It predicts at ~355 µs/doc on CPU — two orders of
 magnitude slower than spellman. The split is the story: spellman wins
-the wild, heavy-Cyrillic workload by 14.2pp on Russian tweets (96.9 vs
+the wild, heavy-Cyrillic workload by 13.8pp on Russian tweets (96.6 vs
 82.7) and the single-word rung by ~28pp (2,102-class label entropy is
 brutal on short text); GlotLID's far larger training set still wins
 clean out-of-domain sentences, by 0.2pp.
