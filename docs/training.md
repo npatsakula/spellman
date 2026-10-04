@@ -326,6 +326,24 @@ publish with a fresh `hf download vpermilp/spellman --repo-type dataset`.
 
 ## Current model: recipe and results
 
+v16 (`recipes/v16.sh`, 2026-10-04) = the v14 mix below, cleaned and with
+Russian's short rows re-sourced; training is v14's (dense):
+
+- `--ortho-gate 0.5` and `--lex-gate 4`: rows whose spelling or words are
+  a twin language's are dropped (`ortho.py`, `lexgate.py`; the lexicon is
+  shipped under `seeds/lexgate/`);
+- the `ukr_tweets … twitter_lang=ru` lane is retired except its clearly
+  Russian rows (`lex_own=3`), and 12k naturally short rows from each of
+  `Den4ikAI/russian_dialogues`, `hausmer/dvach_chat` and
+  `nyuuzyou/ruforum` take its place (`hf` lanes with `drop_long=True`,
+  `sample=N`);
+- the COSMUS Russian lane is retired and `--holdout` keeps every referee
+  row out of all splits;
+- θ = 0.67 by error-detection F1 (`exp/rus_coverage/theta_f1.py`).
+
+Results and the experiments behind each choice: `docs/experiments.md`
+(2026-10-03/04) and `docs/benchmarks.md`.
+
 v14 = the v13c mix (v12 recipe + the six crawl datasets
 `vpermilp/lid-{sah,tyv,kpv,mhr,oss,udm}` as 11 raw `hf:` lanes,
 120k-per-language cap) re-mixed with `--short-floor 0.5` and trained at

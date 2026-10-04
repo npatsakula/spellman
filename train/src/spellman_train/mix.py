@@ -55,6 +55,7 @@ from pathlib import Path
 import polars as pl
 
 from spellman_train import sources
+from spellman_train.lexgate import contradicting_lexicon, load_lexicons
 from spellman_train.ortho import contradicting_twin
 from spellman_train.paths import TRAIN_DIR
 from spellman_train.sources import parse_source, registered
@@ -226,6 +227,17 @@ def cap_stratified(
     return out
 
 
+def parse_cap_overrides(items: list[str]) -> dict[str, int]:
+    """``["rus=240000", ...]`` -> ``{"rus": 240000}`` (--cap-override)."""
+    out: dict[str, int] = {}
+    for item in items:
+        lang, sep, n = item.partition("=")
+        if not sep or not lang or not n.isdigit():
+            raise SystemExit(f"--cap-override expects LANG=N, got {item!r}")
+        out[lang] = int(n)
+    return out
+
+
 def prebuild_colds(specs: list[str], jobs: int) -> None:
     """Build every cold cache in `specs`, one throwaway subprocess each.
 
@@ -309,11 +321,35 @@ def _replay_argv(argv: list[str]) -> list[str]:
     return out + live
 
 
+def _drop_sources(argv: list[str]) -> list[str]:
+    """Apply ``--drop-source SPEC``: remove the matching ``--source SPEC``
+    pair (and the flag itself), so a replay can retire a recorded lane and
+    the new manifest records the recipe as it actually ran."""
+    drops = {argv[i + 1] for i, tok in enumerate(argv[:-1]) if tok == "--drop-source"}
+    if not drops:
+        return argv
+    out: list[str] = []
+    found: set[str] = set()
+    i = 0
+    while i < len(argv):
+        if argv[i] in ("--source", "--drop-source") and i + 1 < len(argv) and argv[i + 1] in drops:
+            if argv[i] == "--source":
+                found.add(argv[i + 1])
+            i += 2
+            continue
+        out.append(argv[i])
+        i += 1
+    missing = drops - found
+    if missing:
+        raise SystemExit(f"--drop-source: no such --source in the recipe: {sorted(missing)}")
+    return out
+
+
 def expand_argv(argv: list[str]) -> list[str]:
     """Pre-parse hook: expand --from-manifest (see _replay_argv)."""
     if any(a == "--from-manifest" or a.startswith("--from-manifest=") for a in argv):
-        return _replay_argv(argv)
-    return argv
+        argv = _replay_argv(argv)
+    return _drop_sources(argv)
 
 
 def populate(ap: argparse.ArgumentParser) -> None:
@@ -326,6 +362,14 @@ def populate(ap: argparse.ArgumentParser) -> None:
         default=None,
         help="cap each language's rows per split (seeded subsample) so one "
         "dominant source cannot skew the val/test aggregates",
+    )
+    ap.add_argument(
+        "--cap-override",
+        action="append",
+        default=[],
+        metavar="LANG=N",
+        help="per-language cap replacing --cap-per-lang for LANG (repeatable, "
+        "e.g. rus=240000); other languages keep the uniform cap",
     )
     ap.add_argument(
         "--wild-augment",
@@ -359,6 +403,35 @@ def populate(ap: argparse.ArgumentParser) -> None:
         "share >= SHARE and the label's own < SHARE (0 = off; 0.5 recommended). "
         "Mentions/URLs/numbers are ignored, so dirty rows are never dropped "
         "for being dirty",
+    )
+    ap.add_argument(
+        "--drop-source",
+        action="append",
+        default=[],
+        metavar="NAME[:K=V,...]",
+        help="remove this exact --source spec from the recipe (with --from-manifest: "
+        "retire a recorded lane); applied before parsing, never recorded",
+    )
+    ap.add_argument(
+        "--holdout",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="TSV",
+        help="referee file (`code<TAB>text` per line, repeatable): rows whose "
+        "whitespace-normalized text appears in it never enter any split, so a "
+        "referee stays held out whatever lanes the recipe reads",
+    )
+    ap.add_argument(
+        "--lex-gate",
+        type=float,
+        default=0.0,
+        metavar="NATS",
+        help="drop rows whose words say they are written in a twin language of "
+        "their label (short Ukrainian tweets labelled rus that carry no "
+        "Ukrainian-only letter): summed word log-odds towards the twin >= NATS, "
+        "from the lexicons under seeds/lexgate/ (0 = off; 4 recommended). "
+        "Runs after --ortho-gate",
     )
     ap.add_argument(
         "--format",
@@ -409,6 +482,20 @@ def run(args: argparse.Namespace) -> None:
         print(f"  -> {kept.height - before} unique samples")
     assert kept is not None
 
+    if args.holdout:
+        held: set[str] = set()
+        for path in args.holdout:
+            for line in path.read_text(encoding="utf-8").split("\n"):
+                if "\t" in line:
+                    held.add(" ".join(line.split("\t", 1)[1].split()))
+        mask = [" ".join(t.split()) in held for t in kept["text"].to_list()]
+        hit = kept.filter(pl.Series(mask)).group_by("lang").len().sort("len", descending=True)
+        kept = kept.filter(~pl.Series(mask))
+        print(
+            f"holdout: dropped {sum(mask)} rows of {len(held)} referee texts — "
+            + ", ".join(f"{l} {n}" for l, n in hit.iter_rows())
+        )
+
     if args.ortho_gate > 0:
         rivals = [
             contradicting_twin(lang, text, args.ortho_gate)
@@ -419,6 +506,20 @@ def run(args: argparse.Namespace) -> None:
         pairs = dropped.group_by("lang", "_rival").len().sort("len", descending=True)
         print(
             f"ortho gate {args.ortho_gate}: dropped {dropped.height} rows — "
+            + ", ".join(f"{l}->{r} {n}" for l, r, n in pairs.iter_rows())
+        )
+
+    if args.lex_gate > 0:
+        gated = set(load_lexicons())
+        rivals = [
+            contradicting_lexicon(lang, text, args.lex_gate) if lang in gated else None
+            for lang, text in zip(kept["lang"].to_list(), kept["text"].to_list())
+        ]
+        dropped = kept.with_columns(_rival=pl.Series(rivals, dtype=pl.String)).filter(pl.col("_rival").is_not_null())
+        kept = kept.filter(pl.Series([r is None for r in rivals]))
+        pairs = dropped.group_by("lang", "_rival").len().sort("len", descending=True)
+        print(
+            f"lex gate {args.lex_gate}: dropped {dropped.height} rows — "
             + ", ".join(f"{l}->{r} {n}" for l, r, n in pairs.iter_rows())
         )
 
@@ -443,21 +544,23 @@ def run(args: argparse.Namespace) -> None:
     # per capped language — Polars' sample/shuffle use their own RNG and
     # cannot reproduce random.Random.sample / .shuffle). The ordered rows are
     # handed back to Polars for the write.
+    overrides = parse_cap_overrides(args.cap_override)
     rng = random.Random(args.seed)
     args.out.mkdir(parents=True, exist_ok=True)
     split_counts: dict[str, int] = {}
     for split, rows in splits.items():
-        if args.cap_per_lang is not None:
+        if args.cap_per_lang is not None or overrides:
             by_lang: dict[str, list[tuple[str, str]]] = {}
             for row in rows:
                 by_lang.setdefault(row[0], []).append(row)
+            caps = {lang: overrides.get(lang, args.cap_per_lang) for lang in by_lang}
             rows = [
                 row
                 for lang in sorted(by_lang)
                 for row in (
                     by_lang[lang]
-                    if len(by_lang[lang]) <= args.cap_per_lang
-                    else cap_stratified(by_lang[lang], args.cap_per_lang, args.short_floor, args.seed)
+                    if caps[lang] is None or len(by_lang[lang]) <= caps[lang]
+                    else cap_stratified(by_lang[lang], caps[lang], args.short_floor, args.seed)
                 )
             ]
         rng.shuffle(rows)
@@ -494,6 +597,9 @@ def run(args: argparse.Namespace) -> None:
         "short_augment": args.short_augment,
         "short_floor": args.short_floor,
         "ortho_gate": args.ortho_gate,
+        **({"cap_override": overrides} if overrides else {}),
+        **({"lex_gate": args.lex_gate} if args.lex_gate > 0 else {}),
+        **({"holdout": [str(p) for p in args.holdout]} if args.holdout else {}),
         "format": args.format,
         "splits": split_counts,
         "sources": [list(parse_source(spec)) for spec in args.source],

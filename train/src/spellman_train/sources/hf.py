@@ -26,6 +26,10 @@ unlocks the row gates:
     # Uzbek-pollution gate for CommonCrawl Tajik (ў never occurs in Tajik):
     --source hf:repo=HPLT/HPLT2.0_cleaned,config=tgk_Cyrl,lang=tgk,no_chars=ў
 
+    # naturally short chat turns: drop (not truncate) longer rows, then a
+    # seeded random 12k of the distinct rows that pass
+    --source hf:repo=hausmer/dvach_chat,lang=rus,raw=True,docs=0,streaming=False,min_chars=3,max_chars=19,drop_long=True,cyr=0.6,sample=12000
+
 ``docs`` caps the number of rows *scanned* (0 = everything); gates filter
 within that budget. ``files`` takes a repo-relative glob (e.g.
 ``data/telegram_blogs*``) passed as ``data_files`` — it selects a subset of
@@ -86,8 +90,19 @@ class HfCorpus(Dataset):
     #: Drop rows containing CJK characters (UTF-8→GBK mojibake damage seen
     #: in told-br; CJK is never legitimate in our languages).
     drop_cjk: bool = False
+    #: Raw mode: drop rows longer than ``max_chars`` instead of truncating
+    #: them. For lanes that want *naturally* short rows (chat turns, forum
+    #: replies): a truncated long row is a fragment, not a short message.
+    drop_long: bool = False
+    #: Raw mode: emit a seeded random sample of this many of the rows that
+    #: pass every gate (0 = all). ``docs`` caps the rows scanned and takes
+    #: the head of the corpus — one chat, one month; ``sample`` spreads the
+    #: budget over everything scanned. Duplicates are removed before sampling
+    #: (chat memes repeat hundreds of times).
+    sample: int = 0
 
     name = "hf"
+    late_options = ("drop_long", "sample")
 
     def samples(self) -> Iterator[tuple[str, str]]:
         from datasets import load_dataset
@@ -146,6 +161,7 @@ class HfCorpus(Dataset):
         desc = f"{self.repo}:{self.config or self.files or ''}->{self.lang}"
         rng = random.Random(self.seed)
         n = 0
+        pool: dict[str, None] = {}  # insertion-ordered distinct rows (sample > 0)
         if self.streaming:
             it = ds.take(self.docs) if self.docs > 0 else ds
         else:
@@ -166,10 +182,15 @@ class HfCorpus(Dataset):
                 if len(text) < self.min_chars:
                     continue
                 if self.max_chars:
+                    if self.drop_long and len(text) > self.max_chars:
+                        continue
                     text = text[: self.max_chars]
                 if self.cyr > 0.0 and cyrillic_ratio(text) < self.cyr:
                     continue
                 if self.drop_cjk and any("\u4e00" <= ch <= "\u9fff" for ch in text):
+                    continue
+                if self.sample:
+                    pool.setdefault(text, None)
                     continue
                 yield self.lang, text
                 n += 1
@@ -177,4 +198,11 @@ class HfCorpus(Dataset):
                 for window in windows_from_doc(text, rng, self.per_doc):
                     yield self.lang, window
                     n += 1
+        if pool:
+            texts = list(pool)
+            if len(texts) > self.sample:
+                texts = rng.sample(texts, self.sample)
+            for text in texts:
+                yield self.lang, text
+            n = len(texts)
         print(f"  {desc}: {n} samples")

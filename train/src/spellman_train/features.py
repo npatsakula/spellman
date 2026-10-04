@@ -315,8 +315,13 @@ def bucket_tokens_flat(
     seed: int = DEFAULT_SEED,
     cfg: FeatureConfig = FeatureConfig(),
     chunk_texts: int = 20_000,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    with_lexical: bool = False,
+) -> tuple[np.ndarray, ...]:
     """Batch extraction of signed bucket tokens for many texts.
+
+    With ``with_lexical`` a fourth array bool[N] marks the lexical-channel
+    tokens (whole-word and word-pair keys), which are otherwise
+    indistinguishable from n-grams once hashed.
 
     Returns (buckets uint32[N], negs bool[N], offsets int64[len+1]) — the
     tokens of text i are buckets[offsets[i]:offsets[i+1]], in the exact
@@ -332,6 +337,7 @@ def bucket_tokens_flat(
         raise RuntimeError("bucket_tokens_flat requires numpy >= 2 (1.26 breaks on large chunks)")
     all_buckets: list[np.ndarray] = []
     all_negs: list[np.ndarray] = []
+    all_lex: list[np.ndarray] = []
     offsets = np.zeros(len(texts) + 1, dtype=np.int64)
     n_min, n_max = cfg.n_min, min(cfg.n_max, 5)
 
@@ -493,13 +499,16 @@ def bucket_tokens_flat(
         h = _hash_batch_u64(keys_all[ord_idx], hash_id, seed)
         all_buckets.append((h >> np.uint32(32 - log2_d)).astype(np.uint32))
         all_negs.append((h & np.uint32(1)).astype(bool))
+        all_lex.append(n_all[ord_idx] >= 6)
         per_row = np.zeros(len(chunk), dtype=np.int64)
         np.add.at(per_row, row_all, 1)
         offsets[t0 + 1 : t0 + 1 + len(chunk)] = offsets[t0] + np.cumsum(per_row)
 
     if all_buckets:
-        return np.concatenate(all_buckets), np.concatenate(all_negs), offsets
-    return np.empty(0, dtype=np.uint32), np.empty(0, dtype=bool), offsets
+        out3 = (np.concatenate(all_buckets), np.concatenate(all_negs), offsets)
+        return (*out3, np.concatenate(all_lex)) if with_lexical else out3
+    out3 = (np.empty(0, dtype=np.uint32), np.empty(0, dtype=bool), offsets)
+    return (*out3, np.empty(0, dtype=bool)) if with_lexical else out3
 
 
 def assert_batch_parity(texts: list[str], log2_d: int = 17) -> None:

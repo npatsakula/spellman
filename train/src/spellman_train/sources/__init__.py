@@ -142,7 +142,16 @@ def _fingerprint(ds: Dataset) -> dict:
     """Option values normalized to JSON-comparable primitives (Path -> str)."""
     if not is_dataclass(ds):
         return {}
-    return {k: str(v) if isinstance(v, Path) else v for k, v in asdict(ds).items()}
+    # Options added after caches already existed are listed in the adapter's
+    # ``late_options`` and stay out of the fingerprint while they hold their
+    # default, so adding one never turns every warm cache of that adapter
+    # cold (a cold cache is rebuilt raw, without the hygiene pass).
+    late = {f.name: f.default for f in fields(ds) if f.name in getattr(ds, "late_options", ())}
+    return {
+        k: str(v) if isinstance(v, Path) else v
+        for k, v in asdict(ds).items()
+        if not (k in late and v == late[k])
+    }
 
 
 def cache_paths(ds: Dataset, cache_dir: Path = CACHE_DIR) -> tuple[Path, Path, dict]:
