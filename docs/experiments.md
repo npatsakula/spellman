@@ -463,3 +463,27 @@ for every model). `okru` = 5,000 short ok.ru comments, in no mix.
   the removed lane (so in train before), mostly transliteration jokes
   ("ви нид ту гоу зэр", "пээмэска", "Ъеъ"); its rus accuracy falls
   80 -> 72 once they leave train.
+
+## v16 candidate — dense build (2026-10-04, branch exp/rus-coverage)
+
+`recipes/v16.sh` = the 12k/pool replacement mix (`data/v16`, train split
+byte-identical to the sweep's) + v15's dense training. Epochs 91 s each;
+quant gate 0.9776 -> 0.9782; theta 0.828 by quantile, **0.66 by
+error-detection F1** (`exp/rus_coverage/theta_f1.py`: val F1 0.536 vs
+0.485, flags 2.67% vs 4.81%), written to model.json. NOT published.
+
+Same common test file as above; one dense run per model, three sparse
+seeds per mix.
+
+| | test | <=20 | rus | ukr | ukr<=20 | others->rus<=20 | rst | okru | short | tatoeba | lit |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| v14 (Hub) | 98.74 | 94.79 | 96.42 | 96.08 | 92.40 | 0.85 | 96.78 | 88.10 | 94.77 | 99.03 | 98.95 |
+| v15 dense | 98.76 | 95.00 | 96.56 | 97.10 | 94.49 | 0.64 | 96.55 | 88.12 | 97.04 | 99.00 | 98.80 |
+| v16 dense | 98.79 | 95.36 | 96.88 | 98.49 | 97.52 | 0.26 | 96.70 | 93.76 | 96.17 | 99.04 | 98.65 |
+| v15 mix sparse s1/s2/s3 | 98.70 / 98.68 / 98.72 | 94.78 / 94.61 / 95.03 | 96.81 / 96.69 / 96.35 | 97.07 / 96.74 / 96.99 | 94.52 / 93.91 / 94.38 | 0.61 / 0.68 / 0.59 | 97.58 / 97.43 / 97.35 | 90.16 / 90.32 / 89.68 | 98.26 / 98.08 / 98.61 | 98.90 / 98.93 / 98.96 | 98.95 / 99.05 / 98.95 |
+| v16 mix sparse s1/s2/s3 | 98.76 / 98.77 / 98.75 | 95.51 / 96.00 / 95.56 | 96.88 / 97.19 / 96.86 | 98.70 / 98.56 / 98.59 | 97.99 / 97.74 / 97.79 | 0.21 / 0.25 / 0.23 | 96.74 / 97.31 / 97.01 | 93.88 / 94.98 / 94.66 | 97.74 / 97.21 / 97.39 | 98.97 / 98.97 / 98.97 | 99.05 / 99.15 / 99.15 |
+
+rst: sparse v16 is 0.4 below sparse v15 on the 3-seed mean (97.02 vs
+97.45); the dense pair goes the other way (+0.15). Dense per-language
+moves >= 0.15: ukr +1.39, rus +0.32, srp +0.17, mkd -0.27, bak -0.21,
+che -0.17. short_eval's drop is its 42 formerly-in-train rus rows.
