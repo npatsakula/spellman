@@ -94,14 +94,29 @@ fastText-class models and ~60× faster than lingua (one thread each).
 
 ## Speed
 
-Apple M4 Max, BEAM=16, µs per document:
+µs per document on the held-out mix, BEAM=16:
 
-| | Tatoeba sentences | held-out mix |
-|---|---|---|
-| one thread, bulk | 1.1–1.4 | 3.2–3.4 |
-| one thread, single document | 2.6 | 6.5–6.8 |
-| 14 cores, one single-thread replica per core | 0.18–0.21 (~5M docs/s) | 0.44–0.50 (~2.1M docs/s) |
-| 14 cores, svod-threaded kernel, 4096-row batches | 0.75 | 0.97–1.00 |
+| CPU | one thread, bulk | one thread, single document | all cores, one replica per thread | all cores, svod-threaded kernel |
+|---|---|---|---|---|
+| Apple M4 Max (14 cores) | 3.2–3.4 | 6.5–6.8 | **0.44–0.50** | 0.97–1.00 |
+| AMD Ryzen 9 7950X3D (16C/32T) | 4.5–4.6 | 4.7 | **0.74–0.75** | 5.0 |
+| AMD Ryzen AI Max+ 395 (16C/32T) | 5.2 | 11.6 | **0.44** | — |
+
+| GPU (svod device) | bulk, featurized on one thread | bulk, featurized on all cores | single document |
+|---|---|---|---|
+| AMD Radeon 8060S (the AI Max+ 395's iGPU, `AMD:0`) | 3.0 | **1.5** | 20.7 |
+| NVIDIA RTX 3060 (`CUDA:0`) | 14.0 | 16.7 | 34.3 |
+
+The x86 and GPU rows score v14's own 719k-row test split plus Tatoeba
+(756,306 rows); the M4 rows score the older v12-era held-out file (368,507
+rows, shorter on average), so read across a row, not down a column — the
+M4 row is due a rerun on the 719k split. Replicas are the fastest setup on
+every CPU.
+
+GPUs are supported (`SVOD_DEVICE=AMD:0` / `CUDA:0`) but not worth it for
+language detection: featurization (~60% of the work) stays on the CPU, so
+CPU replicas win on every machine measured. A unified-memory iGPU is useful
+only to keep the gather off a busy CPU.
 
 For multi-core bulk work, prepare a one-thread plan (`SVOD_THREADS=1`,
 so BEAM tunes the plan for one thread) and fork one replica per worker
