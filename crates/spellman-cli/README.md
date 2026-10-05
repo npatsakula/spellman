@@ -19,10 +19,4 @@ spellman bench  --single
 See the [repository README](https://github.com/npatsakula/spellman) for the
 detector crate, benchmarks and the training pipeline.
 
-> **Publishing status:** this crate is not yet on crates.io — it depends on
-> `spellman-detector`, which depends on
-> [svod](https://github.com/npatsakula/svod) via git (crates.io rejects git
-> dependencies, and the svod release on crates.io predates APIs spellman
-> uses). It will be published together with the detector once a matching
-> svod release lands; until then build it from the repository:
-> `cargo build --release -p spellman-cli`.
+Install with `cargo install spellman-cli` (the binary is named `spellman`).
