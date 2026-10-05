@@ -1,6 +1,6 @@
 [package]
 name = "spellman-detector"
-version = "0.1.0-alpha.7"
+version = "0.1.0"
 edition = "2024"
 description = "Cyrillic-optimized language detection: hashed char n-grams, folded fastText-style model, svod JIT bulk inference"
 license = "MIT"
@@ -12,14 +12,14 @@ categories = ["text-processing", "localization"]
 include = ["src/**", "tests/**", "benches/**", "examples/**", "fixtures/**", "README.md"]
 
 [dependencies]
-spellman-language = { path = "../spellman-language", version = "0.1.0-alpha.7" }
-svod-tensor = "=0.1.0-alpha.7"
-svod-model = "=0.1.0-alpha.7"
-svod-macros = "=0.1.0-alpha.7"
-svod-ir = "=0.1.0-alpha.7"
-svod-dtype = "=0.1.0-alpha.7"
-svod-device = "=0.1.0-alpha.7"
-svod-runtime = "=0.1.0-alpha.7"
+spellman-language = { path = "../spellman-language", version = "0.1.0" }
+svod-tensor = "0.1"
+svod-model = "0.1"
+svod-macros = "0.1"
+svod-ir = "0.1"
+svod-dtype = "0.1"
+svod-device = "0.1"
+svod-runtime = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 snafu = "0.9"
@@ -32,7 +32,7 @@ criterion = "0.5"
 tempfile = "3"
 safetensors = "0.6"
 clap = { version = "4", features = ["derive"] }
-svod-schedule = "=0.1.0-alpha.7"
+svod-schedule = "0.1"
 
 [[bench]]
 name = "bench"

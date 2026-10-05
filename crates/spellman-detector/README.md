@@ -28,10 +28,6 @@ rather than a separate `spellman-language` dependency.
 Full design, benchmarks and the training pipeline: the
 [spellman repository](https://github.com/npatsakula/spellman).
 
-> **Publishing status:** this crate is not yet on crates.io — it depends on
-> [svod](https://github.com/npatsakula/svod) via git, and crates.io rejects
-> git dependencies. The svod release currently on crates.io
-> (0.1.0-alpha.3) predates APIs this crate uses. Once a matching svod
-> release is published, the git specs only need a `version` requirement
-> alongside them (cargo strips git/path specs when packaging); until then
-> build this crate from the repository.
+Add it with `cargo add spellman-detector`. Inference runs through the
+[svod](https://github.com/npatsakula/svod) JIT, whose default C backend
+needs `clang` on `PATH` at run time.

@@ -27,5 +27,5 @@ lingua = { version = "1.8", default-features = false, features = [
 clap = { version = "4", features = ["derive", "env"] }
 rayon = "1"
 libc = "0.2"
-svod-schedule = "=0.1.0-alpha.7"
-svod-tensor = "=0.1.0-alpha.7"
+svod-schedule = "0.1"
+svod-tensor = "0.1"

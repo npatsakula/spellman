@@ -22,18 +22,18 @@ Russian/Ukrainian or Bulgarian/Macedonian.
 ## Quick start
 
 ```bash
-cargo build --release -p spellman-cli
+cargo install spellman-cli   # installs the `spellman` binary
 ```
 
 The model comes from the Hugging Face Hub through the standard HF cache
 (first call downloads ~9 MB, later calls replay it):
 
 ```bash
-echo "Съешь ещё этих мягких французских булок" | ./target/release/spellman detect --model hf:vpermilp/spellman
-printf 'Қазақша\nHello\n' | ./target/release/spellman detect --model hf:vpermilp/spellman --lines   # kaz / eng
+echo "Съешь ещё этих мягких французских булок" | spellman detect --model hf:vpermilp/spellman
+printf 'Қазақша\nHello\n' | spellman detect --model hf:vpermilp/spellman --lines   # kaz / eng
 ```
 
-From Rust:
+From Rust (`cargo add spellman-detector`):
 
 ```rust
 use spellman_detector::{BulkDetector, SingleDetector};
