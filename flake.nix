@@ -87,7 +87,7 @@
               inherit cargoArtifacts;
               # the root manifest is virtual; give the store path a real name
               pname = "spellman";
-              version = "0.1.0";
+              version = "0.2.0";
               meta.mainProgram = "spellman";
             }
           );
